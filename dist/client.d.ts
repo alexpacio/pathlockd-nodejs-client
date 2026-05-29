@@ -1,6 +1,14 @@
 import { EventEmitter } from 'events';
 import * as grpc from '@grpc/grpc-js';
-import { AcquireParams, AcquireResult, AssertResult, CycleResult, HealthResult, LockEvent, PathlockdClientOptions, ReleaseRequest, RenewResult } from './types';
+import { WireEvent } from './proto';
+import { AcquireParams, AcquireResult, AssertResult, CycleResult, HealthResult, LockEvent, LockMode, PathlockdClientOptions, ReleaseRequest, RenewResult } from './types';
+/** Event name → listener signature for {@link PathlockdSubscription}. */
+interface SubscriptionEvents {
+    event: (e: LockEvent) => void;
+    error: (err: Error) => void;
+    end: () => void;
+    close: () => void;
+}
 /**
  * A live, per-owner subscription to the pathlockd lifecycle event stream.
  *
@@ -15,10 +23,8 @@ import { AcquireParams, AcquireResult, AssertResult, CycleResult, HealthResult, 
  */
 export declare class PathlockdSubscription extends EventEmitter {
     private readonly stream;
-    constructor(stream: grpc.ClientReadableStream<any>);
-    on(event: 'event', listener: (e: LockEvent) => void): this;
-    on(event: 'error', listener: (err: Error) => void): this;
-    on(event: 'end' | 'close', listener: () => void): this;
+    constructor(stream: grpc.ClientReadableStream<WireEvent>);
+    on<E extends keyof SubscriptionEvents>(event: E, listener: SubscriptionEvents[E]): this;
     /** Cancel the stream. */
     close(): void;
 }
@@ -67,7 +73,7 @@ export declare class PathlockdDebugClient {
     waitForReady(timeoutMs?: number): Promise<void>;
     flush(): Promise<number>;
     expireOwner(ownerId: string): Promise<void>;
-    deleteLockKey(path: string, mode: 'write' | 'read', ownerId?: string): Promise<void>;
+    deleteLockKey(path: string, mode: LockMode, ownerId?: string): Promise<void>;
     setWriteOwner(path: string, ownerId: string): Promise<void>;
     getWriteOwner(path: string): Promise<string | null>;
     setFence(path: string, value: number): Promise<void>;
@@ -77,4 +83,5 @@ export declare class PathlockdDebugClient {
     ownedPaths(ownerId: string): Promise<OwnedPathsResult>;
     close(): void;
 }
+export {};
 //# sourceMappingURL=client.d.ts.map

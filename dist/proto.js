@@ -54,10 +54,15 @@ function loadPathlockdProto() {
         oneofs: true,
     });
     const pkg = grpc.loadPackageDefinition(def);
+    // proto-loader output is untyped; bridge it to PathlockdPackage at this boundary.
     cached = pkg.pathlockd.v1;
     return cached;
 }
 // --- enum <-> wire mappings (enums arrive/depart as their proto string names) ---
+//
+// Outbound maps are keyed by the public union (exhaustive). Inbound maps are
+// keyed by `string`: the wire value is untrusted, so callers fall back to a
+// default for any value not listed here.
 exports.MODE_TO_WIRE = {
     write: 'MODE_WRITE',
     read: 'MODE_READ',

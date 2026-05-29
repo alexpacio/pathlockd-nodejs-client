@@ -9,8 +9,13 @@ import {
   EVENT_TYPE_FROM_WIRE,
   loadPathlockdProto,
   MODE_TO_WIRE,
+  PathLockDebugServiceClient,
+  PathLockServiceClient,
   RENEW_STATUS_FROM_WIRE,
   STATE_TO_WIRE,
+  UnaryMethod,
+  WireEvent,
+  WireReleaseRequest,
 } from './proto';
 import {
   AcquireParams,
@@ -19,23 +24,41 @@ import {
   CycleResult,
   HealthResult,
   LockEvent,
-  LockEventType,
+  LockMode,
   PathlockdClientOptions,
   ReleaseRequest,
   RenewResult,
 } from './types';
 
-function unary<T>(client: any, method: string, request: unknown): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    client[method](request, (err: grpc.ServiceError | null, res: T) => {
-      if (err) reject(err);
-      else resolve(res);
-    });
+/** The request type accepted by the unary method named `K` on client `C`. */
+type RequestOf<C, K extends keyof C> = C[K] extends UnaryMethod<infer Req, infer _Res> ? Req : never;
+/** The response type returned by the unary method named `K` on client `C`. */
+type ResponseOf<C, K extends keyof C> = C[K] extends UnaryMethod<infer _Req, infer Res> ? Res : never;
+
+/** Promisify a callback-style unary call, dispatched by method name on `client`. */
+function unary<C, K extends keyof C>(
+  client: C,
+  method: K,
+  request: RequestOf<C, K>,
+): Promise<ResponseOf<C, K>> {
+  return new Promise<ResponseOf<C, K>>((resolve, reject) => {
+    const fn = client[method] as unknown as UnaryMethod<RequestOf<C, K>, ResponseOf<C, K>>;
+    // Member dispatch is lost when the method is held in a local, so re-bind
+    // `this` to the client (grpc-js client methods rely on it).
+    fn.call(client, request, (err, response) => (err ? reject(err) : resolve(response)));
   });
 }
 
-function wireRelease(r: ReleaseRequest) {
+function wireRelease(r: ReleaseRequest): WireReleaseRequest {
   return { path: r.path, mode: MODE_TO_WIRE[r.mode ?? 'write'] };
+}
+
+/** Event name → listener signature for {@link PathlockdSubscription}. */
+interface SubscriptionEvents {
+  event: (e: LockEvent) => void;
+  error: (err: Error) => void;
+  end: () => void;
+  close: () => void;
 }
 
 /**
@@ -51,10 +74,10 @@ function wireRelease(r: ReleaseRequest) {
  *  - `close`  → underlying stream closed
  */
 export class PathlockdSubscription extends EventEmitter {
-  constructor(private readonly stream: grpc.ClientReadableStream<any>) {
+  constructor(private readonly stream: grpc.ClientReadableStream<WireEvent>) {
     super();
-    stream.on('data', (msg: any) => {
-      const type = (EVENT_TYPE_FROM_WIRE[msg.type] ?? 'released') as LockEventType;
+    stream.on('data', (msg: WireEvent) => {
+      const type = EVENT_TYPE_FROM_WIRE[msg.type] ?? 'released';
       const event: LockEvent = { type, ownerId: msg.ownerId };
       this.emit('event', event);
     });
@@ -63,11 +86,8 @@ export class PathlockdSubscription extends EventEmitter {
     stream.on('close', () => this.emit('close'));
   }
 
-  on(event: 'event', listener: (e: LockEvent) => void): this;
-  on(event: 'error', listener: (err: Error) => void): this;
-  on(event: 'end' | 'close', listener: () => void): this;
-  on(event: string, listener: (...args: any[]) => void): this {
-    return super.on(event, listener);
+  on<E extends keyof SubscriptionEvents>(event: E, listener: SubscriptionEvents[E]): this {
+    return super.on(event, listener as SubscriptionEvents[keyof SubscriptionEvents]);
   }
 
   /** Cancel the stream. */
@@ -85,7 +105,7 @@ export class PathlockdSubscription extends EventEmitter {
  * exposes the primitives.
  */
 export class PathlockdClient {
-  private readonly client: any;
+  private readonly client: PathLockServiceClient;
 
   constructor(opts: PathlockdClientOptions) {
     const ns = loadPathlockdProto();
@@ -105,7 +125,7 @@ export class PathlockdClient {
   }
 
   async acquire(params: AcquireParams): Promise<AcquireResult> {
-    const request = {
+    const res = await unary(this.client, 'acquire', {
       ownerId: params.ownerId,
       ttlMs: params.ttlMs,
       requests: params.requests.map((r) => ({
@@ -116,10 +136,9 @@ export class PathlockdClient {
       fencingToken: params.fencingToken,
       releaseRequests: (params.releaseRequests ?? []).map(wireRelease),
       emitRelease: params.emitRelease ?? false,
-    };
-    const res = await unary<any>(this.client, 'acquire', request);
+    });
     return {
-      status: (ACQUIRE_STATUS_FROM_WIRE[res.status] ?? 'ok') as AcquireResult['status'],
+      status: ACQUIRE_STATUS_FROM_WIRE[res.status] ?? 'ok',
       path: res.path ?? '',
       owner: res.owner ?? '',
       reason: res.reason ?? '',
@@ -139,9 +158,9 @@ export class PathlockdClient {
   }
 
   async renew(ownerId: string, ttlMs: number): Promise<RenewResult> {
-    const res = await unary<any>(this.client, 'renew', { ownerId, ttlMs });
+    const res = await unary(this.client, 'renew', { ownerId, ttlMs });
     return {
-      status: (RENEW_STATUS_FROM_WIRE[res.status] ?? 'ok') as RenewResult['status'],
+      status: RENEW_STATUS_FROM_WIRE[res.status] ?? 'ok',
       path: res.path ?? '',
       reason: res.reason ?? '',
     };
@@ -152,29 +171,29 @@ export class PathlockdClient {
   }
 
   async assertFencing(ownerId: string, fencingToken: number, paths: string[]): Promise<AssertResult> {
-    const res = await unary<any>(this.client, 'assertFencing', { ownerId, fencingToken, paths });
+    const res = await unary(this.client, 'assertFencing', { ownerId, fencingToken, paths });
     return {
-      status: (ASSERT_STATUS_FROM_WIRE[res.status] ?? 'ok') as AssertResult['status'],
+      status: ASSERT_STATUS_FROM_WIRE[res.status] ?? 'ok',
       path: res.path ?? '',
       reason: res.reason ?? '',
     };
   }
 
   async detectCycle(startOwnerId: string, maxDepth: number): Promise<CycleResult> {
-    const res = await unary<any>(this.client, 'detectCycle', { startOwnerId, maxDepth });
+    const res = await unary(this.client, 'detectCycle', { startOwnerId, maxDepth });
     return {
-      kind: (CYCLE_KIND_FROM_WIRE[res.kind] ?? 'none') as CycleResult['kind'],
+      kind: CYCLE_KIND_FROM_WIRE[res.kind] ?? 'none',
       chain: res.chain ?? [],
     };
   }
 
   async isBlocking(conflictPath: string, conflictOwner: string, reason: string): Promise<boolean> {
-    const res = await unary<any>(this.client, 'isBlocking', { conflictPath, conflictOwner, reason });
+    const res = await unary(this.client, 'isBlocking', { conflictPath, conflictOwner, reason });
     return Boolean(res.blocking);
   }
 
   async incrFencingToken(): Promise<number> {
-    const res = await unary<any>(this.client, 'incrFencingToken', {});
+    const res = await unary(this.client, 'incrFencingToken', {});
     return Number(res.token);
   }
 
@@ -187,7 +206,7 @@ export class PathlockdClient {
   }
 
   async isOwnerAlive(ownerId: string): Promise<boolean> {
-    const res = await unary<any>(this.client, 'isOwnerAlive', { ownerId });
+    const res = await unary(this.client, 'isOwnerAlive', { ownerId });
     return Boolean(res.alive);
   }
 
@@ -201,12 +220,12 @@ export class PathlockdClient {
    * `released`). Returns immediately; events arrive via the emitter.
    */
   subscribe(ownerId: string): PathlockdSubscription {
-    const stream: grpc.ClientReadableStream<any> = this.client.subscribe({ ownerId });
+    const stream = this.client.subscribe({ ownerId });
     return new PathlockdSubscription(stream);
   }
 
   async health(): Promise<HealthResult> {
-    const res = await unary<any>(this.client, 'health', {});
+    const res = await unary(this.client, 'health', {});
     return { ok: Boolean(res.ok), detail: res.detail ?? '' };
   }
 
@@ -225,7 +244,7 @@ export interface OwnedPathsResult {
 }
 
 export class PathlockdDebugClient {
-  private readonly client: any;
+  private readonly client: PathLockDebugServiceClient;
 
   constructor(opts: PathlockdClientOptions) {
     const ns = loadPathlockdProto();
@@ -244,7 +263,7 @@ export class PathlockdDebugClient {
   }
 
   async flush(): Promise<number> {
-    const res = await unary<any>(this.client, 'flush', {});
+    const res = await unary(this.client, 'flush', {});
     return Number(res.deleted ?? 0);
   }
 
@@ -252,7 +271,7 @@ export class PathlockdDebugClient {
     await unary(this.client, 'expireOwner', { ownerId });
   }
 
-  async deleteLockKey(path: string, mode: 'write' | 'read', ownerId = ''): Promise<void> {
+  async deleteLockKey(path: string, mode: LockMode, ownerId = ''): Promise<void> {
     await unary(this.client, 'deleteLockKey', { path, mode: MODE_TO_WIRE[mode], ownerId });
   }
 
@@ -261,7 +280,7 @@ export class PathlockdDebugClient {
   }
 
   async getWriteOwner(path: string): Promise<string | null> {
-    const res = await unary<any>(this.client, 'getWriteOwner', { path });
+    const res = await unary(this.client, 'getWriteOwner', { path });
     return res.exists ? res.ownerId : null;
   }
 
@@ -270,7 +289,7 @@ export class PathlockdDebugClient {
   }
 
   async getFence(path: string): Promise<number | null> {
-    const res = await unary<any>(this.client, 'getFence', { path });
+    const res = await unary(this.client, 'getFence', { path });
     return res.exists ? Number(res.value) : null;
   }
 
@@ -279,12 +298,12 @@ export class PathlockdDebugClient {
   }
 
   async getFencingCounter(): Promise<number> {
-    const res = await unary<any>(this.client, 'getFencingCounter', {});
+    const res = await unary(this.client, 'getFencingCounter', {});
     return Number(res.value ?? 0);
   }
 
   async ownedPaths(ownerId: string): Promise<OwnedPathsResult> {
-    const res = await unary<any>(this.client, 'ownedPaths', { ownerId });
+    const res = await unary(this.client, 'ownedPaths', { ownerId });
     return { members: res.members ?? [], alive: Boolean(res.alive) };
   }
 
