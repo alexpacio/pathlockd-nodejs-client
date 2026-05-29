@@ -4,3 +4,4 @@ node_modules
 
 # dist/ is committed: it ships the prebuilt JS + .d.ts so installing from a git
 # ref needs no build step (faster install). Rebuild with `npm run build`.
+.claude

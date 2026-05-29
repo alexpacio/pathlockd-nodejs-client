@@ -3,14 +3,13 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.PathlockdDebugClient = exports.PathlockdClient = exports.PathlockdSubscription = void 0;
 const events_1 = require("events");
 const proto_1 = require("./proto");
+/** Promisify a callback-style unary call, dispatched by method name on `client`. */
 function unary(client, method, request) {
     return new Promise((resolve, reject) => {
-        client[method](request, (err, res) => {
-            if (err)
-                reject(err);
-            else
-                resolve(res);
-        });
+        const fn = client[method];
+        // Member dispatch is lost when the method is held in a local, so re-bind
+        // `this` to the client (grpc-js client methods rely on it).
+        fn.call(client, request, (err, response) => (err ? reject(err) : resolve(response)));
     });
 }
 function wireRelease(r) {
@@ -33,7 +32,7 @@ class PathlockdSubscription extends events_1.EventEmitter {
         super();
         this.stream = stream;
         stream.on('data', (msg) => {
-            const type = (proto_1.EVENT_TYPE_FROM_WIRE[msg.type] ?? 'released');
+            const type = proto_1.EVENT_TYPE_FROM_WIRE[msg.type] ?? 'released';
             const event = { type, ownerId: msg.ownerId };
             this.emit('event', event);
         });
@@ -71,7 +70,7 @@ class PathlockdClient {
         });
     }
     async acquire(params) {
-        const request = {
+        const res = await unary(this.client, 'acquire', {
             ownerId: params.ownerId,
             ttlMs: params.ttlMs,
             requests: params.requests.map((r) => ({
@@ -82,10 +81,9 @@ class PathlockdClient {
             fencingToken: params.fencingToken,
             releaseRequests: (params.releaseRequests ?? []).map(wireRelease),
             emitRelease: params.emitRelease ?? false,
-        };
-        const res = await unary(this.client, 'acquire', request);
+        });
         return {
-            status: (proto_1.ACQUIRE_STATUS_FROM_WIRE[res.status] ?? 'ok'),
+            status: proto_1.ACQUIRE_STATUS_FROM_WIRE[res.status] ?? 'ok',
             path: res.path ?? '',
             owner: res.owner ?? '',
             reason: res.reason ?? '',
@@ -104,7 +102,7 @@ class PathlockdClient {
     async renew(ownerId, ttlMs) {
         const res = await unary(this.client, 'renew', { ownerId, ttlMs });
         return {
-            status: (proto_1.RENEW_STATUS_FROM_WIRE[res.status] ?? 'ok'),
+            status: proto_1.RENEW_STATUS_FROM_WIRE[res.status] ?? 'ok',
             path: res.path ?? '',
             reason: res.reason ?? '',
         };
@@ -115,7 +113,7 @@ class PathlockdClient {
     async assertFencing(ownerId, fencingToken, paths) {
         const res = await unary(this.client, 'assertFencing', { ownerId, fencingToken, paths });
         return {
-            status: (proto_1.ASSERT_STATUS_FROM_WIRE[res.status] ?? 'ok'),
+            status: proto_1.ASSERT_STATUS_FROM_WIRE[res.status] ?? 'ok',
             path: res.path ?? '',
             reason: res.reason ?? '',
         };
@@ -123,7 +121,7 @@ class PathlockdClient {
     async detectCycle(startOwnerId, maxDepth) {
         const res = await unary(this.client, 'detectCycle', { startOwnerId, maxDepth });
         return {
-            kind: (proto_1.CYCLE_KIND_FROM_WIRE[res.kind] ?? 'none'),
+            kind: proto_1.CYCLE_KIND_FROM_WIRE[res.kind] ?? 'none',
             chain: res.chain ?? [],
         };
     }
