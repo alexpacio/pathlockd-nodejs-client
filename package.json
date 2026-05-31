@@ -4,8 +4,12 @@
   "description": "Typed Node.js/TypeScript gRPC client for pathlockd — fast, scalable, opinionated path-based distributed locking primitives over TiKV.",
   "license": "AGPL-3.0-or-later",
   "author": "alexpacio",
-  "os": ["linux"],
-  "cpu": ["x64"],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/alexpacio/pathlockd-nodejs-client.git"
@@ -31,14 +35,14 @@
     "prepublishOnly": "npm run clean && npm run build"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "dependencies": {
-    "@grpc/grpc-js": "^1.10.6",
-    "@grpc/proto-loader": "^0.7.12"
+    "@grpc/grpc-js": "^1.14.4",
+    "@grpc/proto-loader": "^0.8.1"
   },
   "devDependencies": {
-    "@types/node": "^20.12.7",
-    "typescript": "^5.4.5"
+    "@types/node": "^25.9.1",
+    "typescript": "^6.0.3"
   }
 }

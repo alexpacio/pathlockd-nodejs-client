@@ -35,6 +35,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.EVENT_TYPE_FROM_WIRE = exports.CYCLE_KIND_FROM_WIRE = exports.ASSERT_STATUS_FROM_WIRE = exports.RENEW_STATUS_FROM_WIRE = exports.ACQUIRE_STATUS_FROM_WIRE = exports.STATE_TO_WIRE = exports.MODE_TO_WIRE = exports.PROTO_PATH = void 0;
 exports.loadPathlockdProto = loadPathlockdProto;
+exports.decodeWireEnum = decodeWireEnum;
 exports.buildCredentials = buildCredentials;
 const path = __importStar(require("path"));
 const grpc = __importStar(require("@grpc/grpc-js"));
@@ -94,6 +95,16 @@ exports.EVENT_TYPE_FROM_WIRE = {
     EVENT_TYPE_KILLED: 'killed',
     EVENT_TYPE_REVOKE: 'revoke',
 };
+function decodeWireEnum(values, value, fieldName) {
+    if (typeof value !== 'string') {
+        throw new Error(`Unknown ${fieldName} enum value: ${String(value)}`);
+    }
+    const decoded = values[value];
+    if (decoded === undefined) {
+        throw new Error(`Unknown ${fieldName} enum value: ${JSON.stringify(value)}`);
+    }
+    return decoded;
+}
 function buildCredentials(tls) {
     return tls ? grpc.credentials.createSsl() : grpc.credentials.createInsecure();
 }

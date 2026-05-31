@@ -6,6 +6,7 @@ import {
   ASSERT_STATUS_FROM_WIRE,
   buildCredentials,
   CYCLE_KIND_FROM_WIRE,
+  decodeWireEnum,
   EVENT_TYPE_FROM_WIRE,
   loadPathlockdProto,
   MODE_TO_WIRE,
@@ -77,16 +78,20 @@ export class PathlockdSubscription extends EventEmitter {
   constructor(private readonly stream: grpc.ClientReadableStream<WireEvent>) {
     super();
     stream.on('data', (msg: WireEvent) => {
-      const type = EVENT_TYPE_FROM_WIRE[msg.type] ?? 'released';
-      const event: LockEvent = { type, ownerId: msg.ownerId };
-      this.emit('event', event);
+      try {
+        const type = decodeWireEnum(EVENT_TYPE_FROM_WIRE, msg.type, 'Event.type');
+        const event: LockEvent = { type, ownerId: msg.ownerId };
+        this.emit('event', event);
+      } catch (err) {
+        this.emit('error', err instanceof Error ? err : new Error(String(err)));
+      }
     });
     stream.on('error', (err: Error) => this.emit('error', err));
     stream.on('end', () => this.emit('end'));
     stream.on('close', () => this.emit('close'));
   }
 
-  on<E extends keyof SubscriptionEvents>(event: E, listener: SubscriptionEvents[E]): this {
+  override on<E extends keyof SubscriptionEvents>(event: E, listener: SubscriptionEvents[E]): this {
     return super.on(event, listener as SubscriptionEvents[keyof SubscriptionEvents]);
   }
 
@@ -138,7 +143,7 @@ export class PathlockdClient {
       emitRelease: params.emitRelease ?? false,
     });
     return {
-      status: ACQUIRE_STATUS_FROM_WIRE[res.status] ?? 'ok',
+      status: decodeWireEnum(ACQUIRE_STATUS_FROM_WIRE, res.status, 'AcquireResponse.status'),
       path: res.path ?? '',
       owner: res.owner ?? '',
       reason: res.reason ?? '',
@@ -160,7 +165,7 @@ export class PathlockdClient {
   async renew(ownerId: string, ttlMs: number): Promise<RenewResult> {
     const res = await unary(this.client, 'renew', { ownerId, ttlMs });
     return {
-      status: RENEW_STATUS_FROM_WIRE[res.status] ?? 'ok',
+      status: decodeWireEnum(RENEW_STATUS_FROM_WIRE, res.status, 'RenewResponse.status'),
       path: res.path ?? '',
       reason: res.reason ?? '',
     };
@@ -173,7 +178,7 @@ export class PathlockdClient {
   async assertFencing(ownerId: string, fencingToken: number, paths: string[]): Promise<AssertResult> {
     const res = await unary(this.client, 'assertFencing', { ownerId, fencingToken, paths });
     return {
-      status: ASSERT_STATUS_FROM_WIRE[res.status] ?? 'ok',
+      status: decodeWireEnum(ASSERT_STATUS_FROM_WIRE, res.status, 'AssertFencingResponse.status'),
       path: res.path ?? '',
       reason: res.reason ?? '',
     };
@@ -182,7 +187,7 @@ export class PathlockdClient {
   async detectCycle(startOwnerId: string, maxDepth: number): Promise<CycleResult> {
     const res = await unary(this.client, 'detectCycle', { startOwnerId, maxDepth });
     return {
-      kind: CYCLE_KIND_FROM_WIRE[res.kind] ?? 'none',
+      kind: decodeWireEnum(CYCLE_KIND_FROM_WIRE, res.kind, 'DetectCycleResponse.kind'),
       chain: res.chain ?? [],
     };
   }

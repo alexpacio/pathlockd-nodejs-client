@@ -212,6 +212,7 @@ export declare const RENEW_STATUS_FROM_WIRE: Record<string, RenewStatus>;
 export declare const ASSERT_STATUS_FROM_WIRE: Record<string, AssertStatus>;
 export declare const CYCLE_KIND_FROM_WIRE: Record<string, CycleKind>;
 export declare const EVENT_TYPE_FROM_WIRE: Record<string, LockEventType>;
+export declare function decodeWireEnum<T extends string>(values: Record<string, T>, value: unknown, fieldName: string): T;
 export declare function buildCredentials(tls: boolean): grpc.ChannelCredentials;
 export {};
 //# sourceMappingURL=proto.d.ts.map

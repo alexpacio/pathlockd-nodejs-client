@@ -365,6 +365,23 @@ export const EVENT_TYPE_FROM_WIRE: Record<string, LockEventType> = {
   EVENT_TYPE_REVOKE: 'revoke',
 };
 
+export function decodeWireEnum<T extends string>(
+  values: Record<string, T>,
+  value: unknown,
+  fieldName: string,
+): T {
+  if (typeof value !== 'string') {
+    throw new Error(`Unknown ${fieldName} enum value: ${String(value)}`);
+  }
+
+  const decoded = values[value];
+  if (decoded === undefined) {
+    throw new Error(`Unknown ${fieldName} enum value: ${JSON.stringify(value)}`);
+  }
+
+  return decoded;
+}
+
 export function buildCredentials(tls: boolean): grpc.ChannelCredentials {
   return tls ? grpc.credentials.createSsl() : grpc.credentials.createInsecure();
 }

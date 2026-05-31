@@ -28,13 +28,19 @@ function wireRelease(r) {
  *  - `close`  → underlying stream closed
  */
 class PathlockdSubscription extends events_1.EventEmitter {
+    stream;
     constructor(stream) {
         super();
         this.stream = stream;
         stream.on('data', (msg) => {
-            const type = proto_1.EVENT_TYPE_FROM_WIRE[msg.type] ?? 'released';
-            const event = { type, ownerId: msg.ownerId };
-            this.emit('event', event);
+            try {
+                const type = (0, proto_1.decodeWireEnum)(proto_1.EVENT_TYPE_FROM_WIRE, msg.type, 'Event.type');
+                const event = { type, ownerId: msg.ownerId };
+                this.emit('event', event);
+            }
+            catch (err) {
+                this.emit('error', err instanceof Error ? err : new Error(String(err)));
+            }
         });
         stream.on('error', (err) => this.emit('error', err));
         stream.on('end', () => this.emit('end'));
@@ -58,6 +64,7 @@ exports.PathlockdSubscription = PathlockdSubscription;
  * exposes the primitives.
  */
 class PathlockdClient {
+    client;
     constructor(opts) {
         const ns = (0, proto_1.loadPathlockdProto)();
         this.client = new ns.PathLock(opts.endpoint, (0, proto_1.buildCredentials)(opts.tls ?? false), opts.channelOptions ?? {});
@@ -83,7 +90,7 @@ class PathlockdClient {
             emitRelease: params.emitRelease ?? false,
         });
         return {
-            status: proto_1.ACQUIRE_STATUS_FROM_WIRE[res.status] ?? 'ok',
+            status: (0, proto_1.decodeWireEnum)(proto_1.ACQUIRE_STATUS_FROM_WIRE, res.status, 'AcquireResponse.status'),
             path: res.path ?? '',
             owner: res.owner ?? '',
             reason: res.reason ?? '',
@@ -102,7 +109,7 @@ class PathlockdClient {
     async renew(ownerId, ttlMs) {
         const res = await unary(this.client, 'renew', { ownerId, ttlMs });
         return {
-            status: proto_1.RENEW_STATUS_FROM_WIRE[res.status] ?? 'ok',
+            status: (0, proto_1.decodeWireEnum)(proto_1.RENEW_STATUS_FROM_WIRE, res.status, 'RenewResponse.status'),
             path: res.path ?? '',
             reason: res.reason ?? '',
         };
@@ -113,7 +120,7 @@ class PathlockdClient {
     async assertFencing(ownerId, fencingToken, paths) {
         const res = await unary(this.client, 'assertFencing', { ownerId, fencingToken, paths });
         return {
-            status: proto_1.ASSERT_STATUS_FROM_WIRE[res.status] ?? 'ok',
+            status: (0, proto_1.decodeWireEnum)(proto_1.ASSERT_STATUS_FROM_WIRE, res.status, 'AssertFencingResponse.status'),
             path: res.path ?? '',
             reason: res.reason ?? '',
         };
@@ -121,7 +128,7 @@ class PathlockdClient {
     async detectCycle(startOwnerId, maxDepth) {
         const res = await unary(this.client, 'detectCycle', { startOwnerId, maxDepth });
         return {
-            kind: proto_1.CYCLE_KIND_FROM_WIRE[res.kind] ?? 'none',
+            kind: (0, proto_1.decodeWireEnum)(proto_1.CYCLE_KIND_FROM_WIRE, res.kind, 'DetectCycleResponse.kind'),
             chain: res.chain ?? [],
         };
     }
@@ -165,6 +172,7 @@ class PathlockdClient {
 }
 exports.PathlockdClient = PathlockdClient;
 class PathlockdDebugClient {
+    client;
     constructor(opts) {
         const ns = (0, proto_1.loadPathlockdProto)();
         this.client = new ns.PathLockDebug(opts.endpoint, (0, proto_1.buildCredentials)(opts.tls ?? false), opts.channelOptions ?? {});
