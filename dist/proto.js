@@ -40,6 +40,8 @@ exports.toWireInt64 = toWireInt64;
 exports.toWireUint64 = toWireUint64;
 exports.toWirePositiveUint64 = toWirePositiveUint64;
 exports.wireInt64ToSafeNumber = wireInt64ToSafeNumber;
+exports.wireInt64ToBigInt = wireInt64ToBigInt;
+exports.bigintToWireInt64 = bigintToWireInt64;
 exports.buildCredentials = buildCredentials;
 const path = __importStar(require("path"));
 const grpc = __importStar(require("@grpc/grpc-js"));
@@ -137,6 +139,34 @@ function wireInt64ToSafeNumber(value, fieldName) {
         throw new Error(`${fieldName} is outside JavaScript's safe integer range: ${String(value)}`);
     }
     return parsed;
+}
+const INT64_MAX = 9223372036854775807n;
+const INT64_MIN = -9223372036854775808n;
+/**
+ * Decode a wire int64 (kept as a `string` by the proto loader, see `longs: String`)
+ * into a `bigint`. Fence values and fencing tokens are PD TSO timestamps that
+ * routinely exceed `Number.MAX_SAFE_INTEGER`, so they must not pass through `Number`.
+ */
+function wireInt64ToBigInt(value, fieldName) {
+    try {
+        if (typeof value === 'bigint')
+            return value;
+        if (typeof value === 'number' && Number.isInteger(value))
+            return BigInt(value);
+        if (typeof value === 'string' && /^-?\d+$/.test(value))
+            return BigInt(value);
+    }
+    catch {
+        // fall through to the thrown error below
+    }
+    throw new Error(`${fieldName} is not a valid int64: ${String(value)}`);
+}
+/** Encode a `bigint` as a wire int64 string, validating the full int64 range. */
+function bigintToWireInt64(value, fieldName) {
+    if (typeof value !== 'bigint' || value < INT64_MIN || value > INT64_MAX) {
+        throw new Error(`${fieldName} must be an int64`);
+    }
+    return value.toString();
 }
 function buildCredentials(tls) {
     return tls ? grpc.credentials.createSsl() : grpc.credentials.createInsecure();

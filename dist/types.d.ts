@@ -7,7 +7,12 @@ export type RenewStatus = 'ok' | 'lost';
 export type AssertStatus = 'ok' | 'fail';
 export type CycleKind = 'none' | 'cycle' | 'truncated';
 export type LockEventType = 'released' | 'killed' | 'revoke';
-export type FencingToken = number;
+/**
+ * A fencing token is the PD TSO version returned by {@link PathlockdClient.incrFencingToken}.
+ * It is a packed i64 timestamp (`(physical_ms << 18) | logical`) that routinely exceeds
+ * `Number.MAX_SAFE_INTEGER`, so it is represented as a `bigint` to stay exact and ordered.
+ */
+export type FencingToken = bigint;
 /** A lock path is "<handlerType>:<normalizedPath>", e.g. "google_drive:/a/b". */
 export interface LockRequest {
     path: string;

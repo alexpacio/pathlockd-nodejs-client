@@ -14,12 +14,14 @@ import {
   PathLockServiceClient,
   RENEW_STATUS_FROM_WIRE,
   STATE_TO_WIRE,
+  bigintToWireInt64,
   toWireInt64,
   toWirePositiveUint64,
   UnaryMethod,
   WireEvent,
   WireReleaseRequest,
   WireRequestRevokeRequest,
+  wireInt64ToBigInt,
   wireInt64ToSafeNumber,
 } from './proto';
 import {
@@ -64,9 +66,9 @@ function hasWriteRequest(params: AcquireParams): boolean {
   return params.requests.some((r) => (r.mode ?? 'write') === 'write');
 }
 
-function assertPositiveFencingToken(value: number, fieldName: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${fieldName} must be a positive safe integer`);
+function assertPositiveFencingToken(value: bigint, fieldName: string): void {
+  if (typeof value !== 'bigint' || value <= 0n) {
+    throw new Error(`${fieldName} must be a positive bigint`);
   }
 }
 
@@ -157,7 +159,7 @@ export class PathlockdClient {
         mode: MODE_TO_WIRE[r.mode ?? 'write'],
         state: STATE_TO_WIRE[r.state ?? 'new'],
       })),
-      fencingToken: toWireInt64(params.fencingToken, 'Acquire.fencingToken'),
+      fencingToken: bigintToWireInt64(params.fencingToken, 'Acquire.fencingToken'),
       releaseRequests: (params.releaseRequests ?? []).map(wireRelease),
       emitRelease: params.emitRelease ?? false,
     });
@@ -197,13 +199,13 @@ export class PathlockdClient {
     await unary(this.client, 'forceRelease', { victimId });
   }
 
-  async assertFencing(ownerId: string, fencingToken: number, paths: string[]): Promise<AssertResult> {
+  async assertFencing(ownerId: string, fencingToken: bigint, paths: string[]): Promise<AssertResult> {
     if (paths.length > 0) {
       assertPositiveFencingToken(fencingToken, 'AssertFencing.fencingToken');
     }
     const res = await unary(this.client, 'assertFencing', {
       ownerId,
-      fencingToken: toWireInt64(fencingToken, 'AssertFencing.fencingToken'),
+      fencingToken: bigintToWireInt64(fencingToken, 'AssertFencing.fencingToken'),
       paths,
     });
     return {
@@ -226,9 +228,9 @@ export class PathlockdClient {
     return Boolean(res.blocking);
   }
 
-  async incrFencingToken(): Promise<number> {
+  async incrFencingToken(): Promise<bigint> {
     const res = await unary(this.client, 'incrFencingToken', {});
-    return wireInt64ToSafeNumber(res.token, 'IncrFencingTokenResponse.token');
+    return wireInt64ToBigInt(res.token, 'IncrFencingTokenResponse.token');
   }
 
   async setWaitEdge(
@@ -345,16 +347,16 @@ export class PathlockdDebugClient {
     return res.exists ? res.ownerId : null;
   }
 
-  async setFence(path: string, value: number): Promise<void> {
+  async setFence(path: string, value: bigint): Promise<void> {
     await unary(this.client, 'setFence', {
       path,
-      value: toWireInt64(value, 'SetFence.value'),
+      value: bigintToWireInt64(value, 'SetFence.value'),
     });
   }
 
-  async getFence(path: string): Promise<number | null> {
+  async getFence(path: string): Promise<bigint | null> {
     const res = await unary(this.client, 'getFence', { path });
-    return res.exists ? wireInt64ToSafeNumber(res.value, 'GetFenceResponse.value') : null;
+    return res.exists ? wireInt64ToBigInt(res.value, 'GetFenceResponse.value') : null;
   }
 
   async setFencingCounter(value: number): Promise<void> {

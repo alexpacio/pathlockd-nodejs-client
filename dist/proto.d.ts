@@ -222,6 +222,14 @@ export declare function toWireInt64(value: number, fieldName: string): string;
 export declare function toWireUint64(value: number, fieldName: string): string;
 export declare function toWirePositiveUint64(value: number, fieldName: string): string;
 export declare function wireInt64ToSafeNumber(value: unknown, fieldName: string): number;
+/**
+ * Decode a wire int64 (kept as a `string` by the proto loader, see `longs: String`)
+ * into a `bigint`. Fence values and fencing tokens are PD TSO timestamps that
+ * routinely exceed `Number.MAX_SAFE_INTEGER`, so they must not pass through `Number`.
+ */
+export declare function wireInt64ToBigInt(value: unknown, fieldName: string): bigint;
+/** Encode a `bigint` as a wire int64 string, validating the full int64 range. */
+export declare function bigintToWireInt64(value: bigint, fieldName: string): string;
 export declare function buildCredentials(tls: boolean): grpc.ChannelCredentials;
 export {};
 //# sourceMappingURL=proto.d.ts.map

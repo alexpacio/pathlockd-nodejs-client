@@ -46,10 +46,10 @@ export declare class PathlockdClient {
     releaseAll(ownerId: string, delWaitKey?: boolean): Promise<void>;
     renew(ownerId: string, ttlMs: number): Promise<RenewResult>;
     forceRelease(victimId: string): Promise<void>;
-    assertFencing(ownerId: string, fencingToken: number, paths: string[]): Promise<AssertResult>;
+    assertFencing(ownerId: string, fencingToken: bigint, paths: string[]): Promise<AssertResult>;
     detectCycle(startOwnerId: string, maxDepth: number): Promise<CycleResult>;
     isBlocking(conflictPath: string, conflictOwner: string, reason: string): Promise<boolean>;
-    incrFencingToken(): Promise<number>;
+    incrFencingToken(): Promise<bigint>;
     setWaitEdge(ownerId: string, conflictOwner: string, ttlMs: number, metadata?: SetWaitEdgeMetadata): Promise<void>;
     clearWaitEdge(ownerId: string): Promise<void>;
     isOwnerAlive(ownerId: string): Promise<boolean>;
@@ -83,8 +83,8 @@ export declare class PathlockdDebugClient {
     deleteLockKey(path: string, mode: LockMode, ownerId?: string): Promise<void>;
     setWriteOwner(path: string, ownerId: string): Promise<void>;
     getWriteOwner(path: string): Promise<string | null>;
-    setFence(path: string, value: number): Promise<void>;
-    getFence(path: string): Promise<number | null>;
+    setFence(path: string, value: bigint): Promise<void>;
+    getFence(path: string): Promise<bigint | null>;
     setFencingCounter(value: number): Promise<void>;
     getFencingCounter(): Promise<number>;
     ownedPaths(ownerId: string): Promise<OwnedPathsResult>;

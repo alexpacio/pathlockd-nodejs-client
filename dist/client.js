@@ -19,8 +19,8 @@ function hasWriteRequest(params) {
     return params.requests.some((r) => (r.mode ?? 'write') === 'write');
 }
 function assertPositiveFencingToken(value, fieldName) {
-    if (!Number.isSafeInteger(value) || value <= 0) {
-        throw new Error(`${fieldName} must be a positive safe integer`);
+    if (typeof value !== 'bigint' || value <= 0n) {
+        throw new Error(`${fieldName} must be a positive bigint`);
     }
 }
 /**
@@ -96,7 +96,7 @@ class PathlockdClient {
                 mode: proto_1.MODE_TO_WIRE[r.mode ?? 'write'],
                 state: proto_1.STATE_TO_WIRE[r.state ?? 'new'],
             })),
-            fencingToken: (0, proto_1.toWireInt64)(params.fencingToken, 'Acquire.fencingToken'),
+            fencingToken: (0, proto_1.bigintToWireInt64)(params.fencingToken, 'Acquire.fencingToken'),
             releaseRequests: (params.releaseRequests ?? []).map(wireRelease),
             emitRelease: params.emitRelease ?? false,
         });
@@ -137,7 +137,7 @@ class PathlockdClient {
         }
         const res = await unary(this.client, 'assertFencing', {
             ownerId,
-            fencingToken: (0, proto_1.toWireInt64)(fencingToken, 'AssertFencing.fencingToken'),
+            fencingToken: (0, proto_1.bigintToWireInt64)(fencingToken, 'AssertFencing.fencingToken'),
             paths,
         });
         return {
@@ -159,7 +159,7 @@ class PathlockdClient {
     }
     async incrFencingToken() {
         const res = await unary(this.client, 'incrFencingToken', {});
-        return (0, proto_1.wireInt64ToSafeNumber)(res.token, 'IncrFencingTokenResponse.token');
+        return (0, proto_1.wireInt64ToBigInt)(res.token, 'IncrFencingTokenResponse.token');
     }
     async setWaitEdge(ownerId, conflictOwner, ttlMs, metadata) {
         if (metadata && (!metadata.conflictPath || !metadata.reason)) {
@@ -246,12 +246,12 @@ class PathlockdDebugClient {
     async setFence(path, value) {
         await unary(this.client, 'setFence', {
             path,
-            value: (0, proto_1.toWireInt64)(value, 'SetFence.value'),
+            value: (0, proto_1.bigintToWireInt64)(value, 'SetFence.value'),
         });
     }
     async getFence(path) {
         const res = await unary(this.client, 'getFence', { path });
-        return res.exists ? (0, proto_1.wireInt64ToSafeNumber)(res.value, 'GetFenceResponse.value') : null;
+        return res.exists ? (0, proto_1.wireInt64ToBigInt)(res.value, 'GetFenceResponse.value') : null;
     }
     async setFencingCounter(value) {
         await unary(this.client, 'setFencingCounter', {
