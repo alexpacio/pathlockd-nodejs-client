@@ -180,8 +180,21 @@ class PathlockdClient {
         const res = await unary(this.client, 'isOwnerAlive', { ownerId });
         return Boolean(res.alive);
     }
-    async requestRevoke(ownerId) {
-        await unary(this.client, 'requestRevoke', { ownerId });
+    /**
+     * Publish a cooperative REVOKE for `ownerId`. When `claim` is supplied, the
+     * daemon also reserves `claim.path` for `claim.claimantOwnerId` (for
+     * `claim.ttlMs`, or a short default) before publishing, so the revoked victim
+     * cannot re-acquire the path before the claimant does. Omitting `claim`
+     * yields the legacy pure-notification behavior.
+     */
+    async requestRevoke(ownerId, claim) {
+        const req = { ownerId };
+        if (claim) {
+            req.claimPath = claim.path;
+            req.claimantOwnerId = claim.claimantOwnerId;
+            req.claimTtlMs = String(claim.ttlMs ?? 0);
+        }
+        await unary(this.client, 'requestRevoke', req);
     }
     /**
      * Open the per-owner event stream for `ownerId`. The returned subscription

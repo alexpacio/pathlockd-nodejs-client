@@ -151,6 +151,12 @@ export interface WireIsOwnerAliveResponse {
 
 export interface WireRequestRevokeRequest {
   ownerId: string;
+  // Optional preemption claim: reserve claimPath for claimantOwnerId until the
+  // winner acquires it, so the revoked victim can't re-grab it first. uint64 is
+  // decoded/encoded as string by proto-loader (longs:String).
+  claimPath?: string;
+  claimantOwnerId?: string;
+  claimTtlMs?: string;
 }
 
 export type WireRequestRevokeResponse = Record<string, never>;

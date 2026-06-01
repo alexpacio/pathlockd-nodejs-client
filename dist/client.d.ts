@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import * as grpc from '@grpc/grpc-js';
 import { WireEvent } from './proto';
-import { AcquireParams, AcquireResult, AssertResult, CycleResult, HealthResult, LockEvent, LockMode, PathlockdClientOptions, ReleaseRequest, RenewResult, SetWaitEdgeMetadata } from './types';
+import { AcquireParams, AcquireResult, AssertResult, CycleResult, HealthResult, LockEvent, LockMode, PathlockdClientOptions, PreemptionClaim, ReleaseRequest, RenewResult, SetWaitEdgeMetadata } from './types';
 /** Event name → listener signature for {@link PathlockdSubscription}. */
 interface SubscriptionEvents {
     event: (e: LockEvent) => void;
@@ -53,7 +53,14 @@ export declare class PathlockdClient {
     setWaitEdge(ownerId: string, conflictOwner: string, ttlMs: number, metadata?: SetWaitEdgeMetadata): Promise<void>;
     clearWaitEdge(ownerId: string): Promise<void>;
     isOwnerAlive(ownerId: string): Promise<boolean>;
-    requestRevoke(ownerId: string): Promise<void>;
+    /**
+     * Publish a cooperative REVOKE for `ownerId`. When `claim` is supplied, the
+     * daemon also reserves `claim.path` for `claim.claimantOwnerId` (for
+     * `claim.ttlMs`, or a short default) before publishing, so the revoked victim
+     * cannot re-acquire the path before the claimant does. Omitting `claim`
+     * yields the legacy pure-notification behavior.
+     */
+    requestRevoke(ownerId: string, claim?: PreemptionClaim): Promise<void>;
     /**
      * Open the per-owner event stream for `ownerId`. The returned subscription
      * only ever emits events for that owner (its `revoke`, `kill`, or own

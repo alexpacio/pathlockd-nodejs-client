@@ -98,6 +98,9 @@ export interface WireIsOwnerAliveResponse {
 }
 export interface WireRequestRevokeRequest {
     ownerId: string;
+    claimPath?: string;
+    claimantOwnerId?: string;
+    claimTtlMs?: string;
 }
 export type WireRequestRevokeResponse = Record<string, never>;
 export interface WireSubscribeRequest {

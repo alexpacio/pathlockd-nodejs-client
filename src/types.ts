@@ -87,6 +87,20 @@ export interface HealthResult {
   detail: string;
 }
 
+/**
+ * An optional preemption claim passed to {@link PathlockdClient.requestRevoke}.
+ * The daemon reserves `path` for `claimantOwnerId` until that owner acquires
+ * it, so the revoked victim cannot re-grab the path first.
+ */
+export interface PreemptionClaim {
+  /** The contended path to reserve (daemon `handler:path` form). */
+  path: string;
+  /** The owner the path is reserved for — typically the revoker itself. */
+  claimantOwnerId: string;
+  /** Reservation lifetime in ms; `0`/omitted lets the daemon pick a default. */
+  ttlMs?: number;
+}
+
 export interface PathlockdClientOptions {
   /** e.g. "localhost:50051". */
   endpoint: string;

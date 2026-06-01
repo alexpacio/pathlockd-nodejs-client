@@ -19,6 +19,7 @@ import {
   UnaryMethod,
   WireEvent,
   WireReleaseRequest,
+  WireRequestRevokeRequest,
   wireInt64ToSafeNumber,
 } from './proto';
 import {
@@ -30,6 +31,7 @@ import {
   LockEvent,
   LockMode,
   PathlockdClientOptions,
+  PreemptionClaim,
   ReleaseRequest,
   RenewResult,
   SetWaitEdgeMetadata,
@@ -256,8 +258,21 @@ export class PathlockdClient {
     return Boolean(res.alive);
   }
 
-  async requestRevoke(ownerId: string): Promise<void> {
-    await unary(this.client, 'requestRevoke', { ownerId });
+  /**
+   * Publish a cooperative REVOKE for `ownerId`. When `claim` is supplied, the
+   * daemon also reserves `claim.path` for `claim.claimantOwnerId` (for
+   * `claim.ttlMs`, or a short default) before publishing, so the revoked victim
+   * cannot re-acquire the path before the claimant does. Omitting `claim`
+   * yields the legacy pure-notification behavior.
+   */
+  async requestRevoke(ownerId: string, claim?: PreemptionClaim): Promise<void> {
+    const req: WireRequestRevokeRequest = { ownerId };
+    if (claim) {
+      req.claimPath = claim.path;
+      req.claimantOwnerId = claim.claimantOwnerId;
+      req.claimTtlMs = String(claim.ttlMs ?? 0);
+    }
+    await unary(this.client, 'requestRevoke', req);
   }
 
   /**
