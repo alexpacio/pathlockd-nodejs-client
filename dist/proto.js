@@ -36,6 +36,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.EVENT_TYPE_FROM_WIRE = exports.CYCLE_KIND_FROM_WIRE = exports.ASSERT_STATUS_FROM_WIRE = exports.RENEW_STATUS_FROM_WIRE = exports.ACQUIRE_STATUS_FROM_WIRE = exports.STATE_TO_WIRE = exports.MODE_TO_WIRE = exports.PROTO_PATH = void 0;
 exports.loadPathlockdProto = loadPathlockdProto;
 exports.decodeWireEnum = decodeWireEnum;
+exports.toWireInt64 = toWireInt64;
+exports.toWireUint64 = toWireUint64;
+exports.toWirePositiveUint64 = toWirePositiveUint64;
+exports.wireInt64ToSafeNumber = wireInt64ToSafeNumber;
 exports.buildCredentials = buildCredentials;
 const path = __importStar(require("path"));
 const grpc = __importStar(require("@grpc/grpc-js"));
@@ -49,7 +53,7 @@ function loadPathlockdProto() {
         return cached;
     const def = protoLoader.loadSync(exports.PROTO_PATH, {
         keepCase: false, // camelCase fields: owner_id -> ownerId
-        longs: Number, // int64 (fencing token) as JS number — safe well past 2^53 here
+        longs: String, // keep int64 exact; client validates before exposing as number
         enums: String, // enum values as their proto names
         defaults: true,
         oneofs: true,
@@ -104,6 +108,35 @@ function decodeWireEnum(values, value, fieldName) {
         throw new Error(`Unknown ${fieldName} enum value: ${JSON.stringify(value)}`);
     }
     return decoded;
+}
+function toWireInt64(value, fieldName) {
+    if (!Number.isSafeInteger(value)) {
+        throw new Error(`${fieldName} must be a safe integer`);
+    }
+    return String(value);
+}
+function toWireUint64(value, fieldName) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+        throw new Error(`${fieldName} must be a non-negative safe integer`);
+    }
+    return String(value);
+}
+function toWirePositiveUint64(value, fieldName) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new Error(`${fieldName} must be a positive safe integer`);
+    }
+    return String(value);
+}
+function wireInt64ToSafeNumber(value, fieldName) {
+    const parsed = typeof value === 'number'
+        ? value
+        : typeof value === 'string'
+            ? Number(value)
+            : Number.NaN;
+    if (!Number.isSafeInteger(parsed)) {
+        throw new Error(`${fieldName} is outside JavaScript's safe integer range: ${String(value)}`);
+    }
+    return parsed;
 }
 function buildCredentials(tls) {
     return tls ? grpc.credentials.createSsl() : grpc.credentials.createInsecure();

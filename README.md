@@ -94,7 +94,7 @@ sub.close();
 | `detectCycle(startOwnerId, maxDepth)` | `CycleResult` — `kind: 'none' \| 'cycle' \| 'truncated'` |
 | `isBlocking(path, owner, reason)` | `boolean` |
 | `incrFencingToken()` | `number` |
-| `setWaitEdge(ownerId, conflictOwner, ttlMs)` | `void` |
+| `setWaitEdge(ownerId, conflictOwner, ttlMs, metadata?)` | `void` |
 | `clearWaitEdge(ownerId)` | `void` |
 | `isOwnerAlive(ownerId)` | `boolean` |
 | `requestRevoke(ownerId)` | `void` |
@@ -105,6 +105,21 @@ sub.close();
 All request/result shapes are exported types (`AcquireParams`, `AcquireResult`,
 `LockRequest`, `LockMode`, `LockState`, `RenewResult`, `AssertResult`,
 `CycleResult`, `LockEvent`, …).
+
+For deadlock detection, pass the `path` and `reason` from a conflict response as
+`metadata`:
+
+```ts
+await client.setWaitEdge(ownerId, conflict.owner, ttlMs, {
+  conflictPath: conflict.path,
+  reason: conflict.reason,
+});
+```
+
+The daemon uses that metadata to discard stale live-owner wait edges before they
+can be reported as deadlock cycles. Write acquires and non-empty fencing asserts
+also require a positive safe-integer fencing token; int64 responses are decoded
+exactly and rejected if they exceed JavaScript's safe integer range.
 
 `PathlockdDebugClient` (test-only; requires `PATHLOCKD_ENABLE_DEBUG=1` on the
 daemon) exposes `flush`, `expireOwner`, `deleteLockKey`, `setWriteOwner`,

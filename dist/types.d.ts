@@ -7,6 +7,7 @@ export type RenewStatus = 'ok' | 'lost';
 export type AssertStatus = 'ok' | 'fail';
 export type CycleKind = 'none' | 'cycle' | 'truncated';
 export type LockEventType = 'released' | 'killed' | 'revoke';
+export type FencingToken = number;
 /** A lock path is "<handlerType>:<normalizedPath>", e.g. "google_drive:/a/b". */
 export interface LockRequest {
     path: string;
@@ -21,7 +22,7 @@ export interface AcquireParams {
     ownerId: string;
     ttlMs: number;
     requests: LockRequest[];
-    fencingToken: number;
+    fencingToken: FencingToken;
     /** Releases folded into the same atomic transaction (shadowing transitions). */
     releaseRequests?: ReleaseRequest[];
     /** Publish a RELEASED event for ownerId if an inline release was applied. */
@@ -58,6 +59,12 @@ export interface CycleResult {
 export interface LockEvent {
     type: LockEventType;
     ownerId: string;
+}
+export interface SetWaitEdgeMetadata {
+    /** The path returned by an Acquire conflict. */
+    conflictPath: string;
+    /** The reason returned by an Acquire conflict. */
+    reason: string;
 }
 export interface HealthResult {
     ok: boolean;

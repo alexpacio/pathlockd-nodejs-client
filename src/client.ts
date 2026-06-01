@@ -14,9 +14,12 @@ import {
   PathLockServiceClient,
   RENEW_STATUS_FROM_WIRE,
   STATE_TO_WIRE,
+  toWireInt64,
+  toWirePositiveUint64,
   UnaryMethod,
   WireEvent,
   WireReleaseRequest,
+  wireInt64ToSafeNumber,
 } from './proto';
 import {
   AcquireParams,
@@ -29,6 +32,7 @@ import {
   PathlockdClientOptions,
   ReleaseRequest,
   RenewResult,
+  SetWaitEdgeMetadata,
 } from './types';
 
 /** The request type accepted by the unary method named `K` on client `C`. */
@@ -52,6 +56,16 @@ function unary<C, K extends keyof C>(
 
 function wireRelease(r: ReleaseRequest): WireReleaseRequest {
   return { path: r.path, mode: MODE_TO_WIRE[r.mode ?? 'write'] };
+}
+
+function hasWriteRequest(params: AcquireParams): boolean {
+  return params.requests.some((r) => (r.mode ?? 'write') === 'write');
+}
+
+function assertPositiveFencingToken(value: number, fieldName: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${fieldName} must be a positive safe integer`);
+  }
 }
 
 /** Event name → listener signature for {@link PathlockdSubscription}. */
@@ -130,15 +144,18 @@ export class PathlockdClient {
   }
 
   async acquire(params: AcquireParams): Promise<AcquireResult> {
+    if (hasWriteRequest(params)) {
+      assertPositiveFencingToken(params.fencingToken, 'Acquire.fencingToken');
+    }
     const res = await unary(this.client, 'acquire', {
       ownerId: params.ownerId,
-      ttlMs: params.ttlMs,
+      ttlMs: toWirePositiveUint64(params.ttlMs, 'Acquire.ttlMs'),
       requests: params.requests.map((r) => ({
         path: r.path,
         mode: MODE_TO_WIRE[r.mode ?? 'write'],
         state: STATE_TO_WIRE[r.state ?? 'new'],
       })),
-      fencingToken: params.fencingToken,
+      fencingToken: toWireInt64(params.fencingToken, 'Acquire.fencingToken'),
       releaseRequests: (params.releaseRequests ?? []).map(wireRelease),
       emitRelease: params.emitRelease ?? false,
     });
@@ -163,7 +180,10 @@ export class PathlockdClient {
   }
 
   async renew(ownerId: string, ttlMs: number): Promise<RenewResult> {
-    const res = await unary(this.client, 'renew', { ownerId, ttlMs });
+    const res = await unary(this.client, 'renew', {
+      ownerId,
+      ttlMs: toWirePositiveUint64(ttlMs, 'Renew.ttlMs'),
+    });
     return {
       status: decodeWireEnum(RENEW_STATUS_FROM_WIRE, res.status, 'RenewResponse.status'),
       path: res.path ?? '',
@@ -176,7 +196,14 @@ export class PathlockdClient {
   }
 
   async assertFencing(ownerId: string, fencingToken: number, paths: string[]): Promise<AssertResult> {
-    const res = await unary(this.client, 'assertFencing', { ownerId, fencingToken, paths });
+    if (paths.length > 0) {
+      assertPositiveFencingToken(fencingToken, 'AssertFencing.fencingToken');
+    }
+    const res = await unary(this.client, 'assertFencing', {
+      ownerId,
+      fencingToken: toWireInt64(fencingToken, 'AssertFencing.fencingToken'),
+      paths,
+    });
     return {
       status: decodeWireEnum(ASSERT_STATUS_FROM_WIRE, res.status, 'AssertFencingResponse.status'),
       path: res.path ?? '',
@@ -199,11 +226,25 @@ export class PathlockdClient {
 
   async incrFencingToken(): Promise<number> {
     const res = await unary(this.client, 'incrFencingToken', {});
-    return Number(res.token);
+    return wireInt64ToSafeNumber(res.token, 'IncrFencingTokenResponse.token');
   }
 
-  async setWaitEdge(ownerId: string, conflictOwner: string, ttlMs: number): Promise<void> {
-    await unary(this.client, 'setWaitEdge', { ownerId, conflictOwner, ttlMs });
+  async setWaitEdge(
+    ownerId: string,
+    conflictOwner: string,
+    ttlMs: number,
+    metadata?: SetWaitEdgeMetadata,
+  ): Promise<void> {
+    if (metadata && (!metadata.conflictPath || !metadata.reason)) {
+      throw new Error('SetWaitEdge metadata requires both conflictPath and reason');
+    }
+    await unary(this.client, 'setWaitEdge', {
+      ownerId,
+      conflictOwner,
+      ttlMs: toWirePositiveUint64(ttlMs, 'SetWaitEdge.ttlMs'),
+      conflictPath: metadata?.conflictPath ?? '',
+      reason: metadata?.reason ?? '',
+    });
   }
 
   async clearWaitEdge(ownerId: string): Promise<void> {
@@ -269,7 +310,7 @@ export class PathlockdDebugClient {
 
   async flush(): Promise<number> {
     const res = await unary(this.client, 'flush', {});
-    return Number(res.deleted ?? 0);
+    return wireInt64ToSafeNumber(res.deleted ?? '0', 'FlushResponse.deleted');
   }
 
   async expireOwner(ownerId: string): Promise<void> {
@@ -290,21 +331,26 @@ export class PathlockdDebugClient {
   }
 
   async setFence(path: string, value: number): Promise<void> {
-    await unary(this.client, 'setFence', { path, value });
+    await unary(this.client, 'setFence', {
+      path,
+      value: toWireInt64(value, 'SetFence.value'),
+    });
   }
 
   async getFence(path: string): Promise<number | null> {
     const res = await unary(this.client, 'getFence', { path });
-    return res.exists ? Number(res.value) : null;
+    return res.exists ? wireInt64ToSafeNumber(res.value, 'GetFenceResponse.value') : null;
   }
 
   async setFencingCounter(value: number): Promise<void> {
-    await unary(this.client, 'setFencingCounter', { value });
+    await unary(this.client, 'setFencingCounter', {
+      value: toWireInt64(value, 'SetFencingCounter.value'),
+    });
   }
 
   async getFencingCounter(): Promise<number> {
     const res = await unary(this.client, 'getFencingCounter', {});
-    return Number(res.value ?? 0);
+    return wireInt64ToSafeNumber(res.value ?? '0', 'GetFencingCounterResponse.value');
   }
 
   async ownedPaths(ownerId: string): Promise<OwnedPathsResult> {

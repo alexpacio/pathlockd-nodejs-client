@@ -15,6 +15,14 @@ function unary(client, method, request) {
 function wireRelease(r) {
     return { path: r.path, mode: proto_1.MODE_TO_WIRE[r.mode ?? 'write'] };
 }
+function hasWriteRequest(params) {
+    return params.requests.some((r) => (r.mode ?? 'write') === 'write');
+}
+function assertPositiveFencingToken(value, fieldName) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new Error(`${fieldName} must be a positive safe integer`);
+    }
+}
 /**
  * A live, per-owner subscription to the pathlockd lifecycle event stream.
  *
@@ -77,15 +85,18 @@ class PathlockdClient {
         });
     }
     async acquire(params) {
+        if (hasWriteRequest(params)) {
+            assertPositiveFencingToken(params.fencingToken, 'Acquire.fencingToken');
+        }
         const res = await unary(this.client, 'acquire', {
             ownerId: params.ownerId,
-            ttlMs: params.ttlMs,
+            ttlMs: (0, proto_1.toWirePositiveUint64)(params.ttlMs, 'Acquire.ttlMs'),
             requests: params.requests.map((r) => ({
                 path: r.path,
                 mode: proto_1.MODE_TO_WIRE[r.mode ?? 'write'],
                 state: proto_1.STATE_TO_WIRE[r.state ?? 'new'],
             })),
-            fencingToken: params.fencingToken,
+            fencingToken: (0, proto_1.toWireInt64)(params.fencingToken, 'Acquire.fencingToken'),
             releaseRequests: (params.releaseRequests ?? []).map(wireRelease),
             emitRelease: params.emitRelease ?? false,
         });
@@ -107,7 +118,10 @@ class PathlockdClient {
         await unary(this.client, 'releaseAll', { ownerId, delWaitKey });
     }
     async renew(ownerId, ttlMs) {
-        const res = await unary(this.client, 'renew', { ownerId, ttlMs });
+        const res = await unary(this.client, 'renew', {
+            ownerId,
+            ttlMs: (0, proto_1.toWirePositiveUint64)(ttlMs, 'Renew.ttlMs'),
+        });
         return {
             status: (0, proto_1.decodeWireEnum)(proto_1.RENEW_STATUS_FROM_WIRE, res.status, 'RenewResponse.status'),
             path: res.path ?? '',
@@ -118,7 +132,14 @@ class PathlockdClient {
         await unary(this.client, 'forceRelease', { victimId });
     }
     async assertFencing(ownerId, fencingToken, paths) {
-        const res = await unary(this.client, 'assertFencing', { ownerId, fencingToken, paths });
+        if (paths.length > 0) {
+            assertPositiveFencingToken(fencingToken, 'AssertFencing.fencingToken');
+        }
+        const res = await unary(this.client, 'assertFencing', {
+            ownerId,
+            fencingToken: (0, proto_1.toWireInt64)(fencingToken, 'AssertFencing.fencingToken'),
+            paths,
+        });
         return {
             status: (0, proto_1.decodeWireEnum)(proto_1.ASSERT_STATUS_FROM_WIRE, res.status, 'AssertFencingResponse.status'),
             path: res.path ?? '',
@@ -138,10 +159,19 @@ class PathlockdClient {
     }
     async incrFencingToken() {
         const res = await unary(this.client, 'incrFencingToken', {});
-        return Number(res.token);
+        return (0, proto_1.wireInt64ToSafeNumber)(res.token, 'IncrFencingTokenResponse.token');
     }
-    async setWaitEdge(ownerId, conflictOwner, ttlMs) {
-        await unary(this.client, 'setWaitEdge', { ownerId, conflictOwner, ttlMs });
+    async setWaitEdge(ownerId, conflictOwner, ttlMs, metadata) {
+        if (metadata && (!metadata.conflictPath || !metadata.reason)) {
+            throw new Error('SetWaitEdge metadata requires both conflictPath and reason');
+        }
+        await unary(this.client, 'setWaitEdge', {
+            ownerId,
+            conflictOwner,
+            ttlMs: (0, proto_1.toWirePositiveUint64)(ttlMs, 'SetWaitEdge.ttlMs'),
+            conflictPath: metadata?.conflictPath ?? '',
+            reason: metadata?.reason ?? '',
+        });
     }
     async clearWaitEdge(ownerId) {
         await unary(this.client, 'clearWaitEdge', { ownerId });
@@ -185,7 +215,7 @@ class PathlockdDebugClient {
     }
     async flush() {
         const res = await unary(this.client, 'flush', {});
-        return Number(res.deleted ?? 0);
+        return (0, proto_1.wireInt64ToSafeNumber)(res.deleted ?? '0', 'FlushResponse.deleted');
     }
     async expireOwner(ownerId) {
         await unary(this.client, 'expireOwner', { ownerId });
@@ -201,18 +231,23 @@ class PathlockdDebugClient {
         return res.exists ? res.ownerId : null;
     }
     async setFence(path, value) {
-        await unary(this.client, 'setFence', { path, value });
+        await unary(this.client, 'setFence', {
+            path,
+            value: (0, proto_1.toWireInt64)(value, 'SetFence.value'),
+        });
     }
     async getFence(path) {
         const res = await unary(this.client, 'getFence', { path });
-        return res.exists ? Number(res.value) : null;
+        return res.exists ? (0, proto_1.wireInt64ToSafeNumber)(res.value, 'GetFenceResponse.value') : null;
     }
     async setFencingCounter(value) {
-        await unary(this.client, 'setFencingCounter', { value });
+        await unary(this.client, 'setFencingCounter', {
+            value: (0, proto_1.toWireInt64)(value, 'SetFencingCounter.value'),
+        });
     }
     async getFencingCounter() {
         const res = await unary(this.client, 'getFencingCounter', {});
-        return Number(res.value ?? 0);
+        return (0, proto_1.wireInt64ToSafeNumber)(res.value ?? '0', 'GetFencingCounterResponse.value');
     }
     async ownedPaths(ownerId) {
         const res = await unary(this.client, 'ownedPaths', { ownerId });

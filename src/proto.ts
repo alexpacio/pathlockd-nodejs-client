@@ -16,8 +16,8 @@ import {
 // Wire types
 //
 // These mirror the protobuf messages as decoded by @grpc/proto-loader with the
-// options below: camelCase fields (keepCase:false), int64/uint64 as `number`
-// (longs:Number), enum values as their proto string names (enums:String), and
+// options below: camelCase fields (keepCase:false), int64/uint64 as `string`
+// (longs:String), enum values as their proto string names (enums:String), and
 // all scalar/repeated fields populated (defaults:true). They are internal to
 // the client and are not part of the public API.
 //
@@ -43,9 +43,9 @@ export interface WireReleaseRequest {
 
 export interface WireAcquireRequest {
   ownerId: string;
-  ttlMs: number;
+  ttlMs: number | string;
   requests: WireLockRequest[];
-  fencingToken: number;
+  fencingToken: number | string;
   releaseRequests: WireReleaseRequest[];
   emitRelease: boolean;
 }
@@ -72,7 +72,7 @@ export type WireReleaseResponse = Record<string, never>;
 
 export interface WireRenewRequest {
   ownerId: string;
-  ttlMs: number;
+  ttlMs: number | string;
 }
 
 export interface WireRenewResponse {
@@ -89,7 +89,7 @@ export type WireForceReleaseResponse = Record<string, never>;
 
 export interface WireAssertFencingRequest {
   ownerId: string;
-  fencingToken: number;
+  fencingToken: number | string;
   paths: string[];
 }
 
@@ -122,13 +122,15 @@ export interface WireIsBlockingResponse {
 export type WireIncrFencingTokenRequest = Record<string, never>;
 
 export interface WireIncrFencingTokenResponse {
-  token: number;
+  token: string;
 }
 
 export interface WireSetWaitEdgeRequest {
   ownerId: string;
   conflictOwner: string;
-  ttlMs: number;
+  ttlMs: number | string;
+  conflictPath?: string;
+  reason?: string;
 }
 
 export type WireSetWaitEdgeResponse = Record<string, never>;
@@ -174,7 +176,7 @@ export interface WireHealthResponse {
 export type WireFlushRequest = Record<string, never>;
 
 export interface WireFlushResponse {
-  deleted: number;
+  deleted: string;
 }
 
 export interface WireExpireOwnerRequest {
@@ -203,7 +205,7 @@ export interface WireGetWriteOwnerResponse {
 
 export interface WireSetFenceRequest {
   path: string;
-  value: number;
+  value: number | string;
 }
 
 export interface WireGetFenceRequest {
@@ -212,17 +214,17 @@ export interface WireGetFenceRequest {
 
 export interface WireGetFenceResponse {
   exists: boolean;
-  value: number;
+  value: string;
 }
 
 export interface WireSetFencingCounterRequest {
-  value: number;
+  value: number | string;
 }
 
 export type WireGetFencingCounterRequest = Record<string, never>;
 
 export interface WireGetFencingCounterResponse {
-  value: number;
+  value: string;
 }
 
 export interface WireOwnedPathsRequest {
@@ -310,7 +312,7 @@ export function loadPathlockdProto(): PathlockdPackage {
   if (cached) return cached;
   const def = protoLoader.loadSync(PROTO_PATH, {
     keepCase: false, // camelCase fields: owner_id -> ownerId
-    longs: Number, // int64 (fencing token) as JS number — safe well past 2^53 here
+    longs: String, // keep int64 exact; client validates before exposing as number
     enums: String, // enum values as their proto names
     defaults: true,
     oneofs: true,
@@ -380,6 +382,40 @@ export function decodeWireEnum<T extends string>(
   }
 
   return decoded;
+}
+
+export function toWireInt64(value: number, fieldName: string): string {
+  if (!Number.isSafeInteger(value)) {
+    throw new Error(`${fieldName} must be a safe integer`);
+  }
+  return String(value);
+}
+
+export function toWireUint64(value: number, fieldName: string): string {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${fieldName} must be a non-negative safe integer`);
+  }
+  return String(value);
+}
+
+export function toWirePositiveUint64(value: number, fieldName: string): string {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${fieldName} must be a positive safe integer`);
+  }
+  return String(value);
+}
+
+export function wireInt64ToSafeNumber(value: unknown, fieldName: string): number {
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string'
+        ? Number(value)
+        : Number.NaN;
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`${fieldName} is outside JavaScript's safe integer range: ${String(value)}`);
+  }
+  return parsed;
 }
 
 export function buildCredentials(tls: boolean): grpc.ChannelCredentials {

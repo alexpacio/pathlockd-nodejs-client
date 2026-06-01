@@ -13,9 +13,9 @@ export interface WireReleaseRequest {
 }
 export interface WireAcquireRequest {
     ownerId: string;
-    ttlMs: number;
+    ttlMs: number | string;
     requests: WireLockRequest[];
-    fencingToken: number;
+    fencingToken: number | string;
     releaseRequests: WireReleaseRequest[];
     emitRelease: boolean;
 }
@@ -37,7 +37,7 @@ export interface WireReleaseAllRequest {
 export type WireReleaseResponse = Record<string, never>;
 export interface WireRenewRequest {
     ownerId: string;
-    ttlMs: number;
+    ttlMs: number | string;
 }
 export interface WireRenewResponse {
     status: string;
@@ -50,7 +50,7 @@ export interface WireForceReleaseRequest {
 export type WireForceReleaseResponse = Record<string, never>;
 export interface WireAssertFencingRequest {
     ownerId: string;
-    fencingToken: number;
+    fencingToken: number | string;
     paths: string[];
 }
 export interface WireAssertFencingResponse {
@@ -76,12 +76,14 @@ export interface WireIsBlockingResponse {
 }
 export type WireIncrFencingTokenRequest = Record<string, never>;
 export interface WireIncrFencingTokenResponse {
-    token: number;
+    token: string;
 }
 export interface WireSetWaitEdgeRequest {
     ownerId: string;
     conflictOwner: string;
-    ttlMs: number;
+    ttlMs: number | string;
+    conflictPath?: string;
+    reason?: string;
 }
 export type WireSetWaitEdgeResponse = Record<string, never>;
 export interface WireClearWaitEdgeRequest {
@@ -112,7 +114,7 @@ export interface WireHealthResponse {
 }
 export type WireFlushRequest = Record<string, never>;
 export interface WireFlushResponse {
-    deleted: number;
+    deleted: string;
 }
 export interface WireExpireOwnerRequest {
     ownerId: string;
@@ -135,21 +137,21 @@ export interface WireGetWriteOwnerResponse {
 }
 export interface WireSetFenceRequest {
     path: string;
-    value: number;
+    value: number | string;
 }
 export interface WireGetFenceRequest {
     path: string;
 }
 export interface WireGetFenceResponse {
     exists: boolean;
-    value: number;
+    value: string;
 }
 export interface WireSetFencingCounterRequest {
-    value: number;
+    value: number | string;
 }
 export type WireGetFencingCounterRequest = Record<string, never>;
 export interface WireGetFencingCounterResponse {
-    value: number;
+    value: string;
 }
 export interface WireOwnedPathsRequest {
     ownerId: string;
@@ -213,6 +215,10 @@ export declare const ASSERT_STATUS_FROM_WIRE: Record<string, AssertStatus>;
 export declare const CYCLE_KIND_FROM_WIRE: Record<string, CycleKind>;
 export declare const EVENT_TYPE_FROM_WIRE: Record<string, LockEventType>;
 export declare function decodeWireEnum<T extends string>(values: Record<string, T>, value: unknown, fieldName: string): T;
+export declare function toWireInt64(value: number, fieldName: string): string;
+export declare function toWireUint64(value: number, fieldName: string): string;
+export declare function toWirePositiveUint64(value: number, fieldName: string): string;
+export declare function wireInt64ToSafeNumber(value: unknown, fieldName: string): number;
 export declare function buildCredentials(tls: boolean): grpc.ChannelCredentials;
 export {};
 //# sourceMappingURL=proto.d.ts.map

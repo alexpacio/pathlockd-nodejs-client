@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import * as grpc from '@grpc/grpc-js';
 import { WireEvent } from './proto';
-import { AcquireParams, AcquireResult, AssertResult, CycleResult, HealthResult, LockEvent, LockMode, PathlockdClientOptions, ReleaseRequest, RenewResult } from './types';
+import { AcquireParams, AcquireResult, AssertResult, CycleResult, HealthResult, LockEvent, LockMode, PathlockdClientOptions, ReleaseRequest, RenewResult, SetWaitEdgeMetadata } from './types';
 /** Event name → listener signature for {@link PathlockdSubscription}. */
 interface SubscriptionEvents {
     event: (e: LockEvent) => void;
@@ -50,7 +50,7 @@ export declare class PathlockdClient {
     detectCycle(startOwnerId: string, maxDepth: number): Promise<CycleResult>;
     isBlocking(conflictPath: string, conflictOwner: string, reason: string): Promise<boolean>;
     incrFencingToken(): Promise<number>;
-    setWaitEdge(ownerId: string, conflictOwner: string, ttlMs: number): Promise<void>;
+    setWaitEdge(ownerId: string, conflictOwner: string, ttlMs: number, metadata?: SetWaitEdgeMetadata): Promise<void>;
     clearWaitEdge(ownerId: string): Promise<void>;
     isOwnerAlive(ownerId: string): Promise<boolean>;
     requestRevoke(ownerId: string): Promise<void>;
