@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import * as grpc from '@grpc/grpc-js';
 import { WireEvent } from './proto';
-import { AcquireParams, AcquireResult, AssertResult, CycleResult, HealthResult, LockEvent, LockMode, PathlockdClientOptions, PreemptionClaim, ReleaseRequest, RenewResult, SetWaitEdgeMetadata } from './types';
+import { AcquireParams, AcquireResult, AssertResult, CycleResult, HealthResult, LockEntry, LockEvent, OwnerLocksResult, PathLockInfo, PathlockdClientOptions, PreemptionClaim, ReleaseRequest, RenewResult, SetWaitEdgeMetadata } from './types';
 /** Event name → listener signature for {@link PathlockdSubscription}. */
 interface SubscriptionEvents {
     event: (e: LockEvent) => void;
@@ -54,6 +54,39 @@ export declare class PathlockdClient {
     clearWaitEdge(ownerId: string): Promise<void>;
     isOwnerAlive(ownerId: string): Promise<boolean>;
     /**
+     * Read-only snapshot of the lock state at one exact path: live write owner,
+     * live read owners, fence value and any preemption claim. Filtered by owner
+     * liveness; never mutates daemon state.
+     */
+    inspectPath(path: string): Promise<PathLockInfo>;
+    /**
+     * Read-only listing of every lock recorded for one owner, plus whether its
+     * liveness lease is still present. The owner-centric companion to
+     * {@link inspectPath}.
+     */
+    listOwnerLocks(ownerId: string): Promise<OwnerLocksResult>;
+    /**
+     * Dump every live lock across the cluster, auto-paginating internally. Each
+     * entry is one (owner, mode, path) holding with the fence for write locks.
+     *
+     * Best-effort observability: the daemon reads each owner in its own snapshot,
+     * so the result is near-real-time, not a single global instant. To bound
+     * memory, collection stops and throws once `maxEntries` entries are seen
+     * (default {@link DUMP_DEFAULT_MAX_ENTRIES}); for very large clusters drive
+     * {@link dumpLocksPages} directly and stream instead.
+     */
+    dumpLocks(opts?: {
+        ownerPage?: number;
+        maxEntries?: number;
+    }): Promise<LockEntry[]>;
+    /**
+     * Lower-level dump: an async generator yielding one decoded page of lock
+     * entries per daemon round-trip. Lets callers stream an arbitrarily large
+     * cluster without buffering it all. `ownerPage` sets how many owners the
+     * daemon scans per page (0 / omitted uses the server default).
+     */
+    dumpLocksPages(ownerPage?: number): AsyncGenerator<LockEntry[]>;
+    /**
      * Publish a cooperative REVOKE for `ownerId`. When `claim` is supplied, the
      * daemon also reserves `claim.path` for `claim.claimantOwnerId` (for
      * `claim.ttlMs`, or a short default) before publishing, so the revoked victim
@@ -68,26 +101,6 @@ export declare class PathlockdClient {
      */
     subscribe(ownerId: string): PathlockdSubscription;
     health(): Promise<HealthResult>;
-    close(): void;
-}
-export interface OwnedPathsResult {
-    members: string[];
-    alive: boolean;
-}
-export declare class PathlockdDebugClient {
-    private readonly client;
-    constructor(opts: PathlockdClientOptions);
-    waitForReady(timeoutMs?: number): Promise<void>;
-    flush(): Promise<number>;
-    expireOwner(ownerId: string): Promise<void>;
-    deleteLockKey(path: string, mode: LockMode, ownerId?: string): Promise<void>;
-    setWriteOwner(path: string, ownerId: string): Promise<void>;
-    getWriteOwner(path: string): Promise<string | null>;
-    setFence(path: string, value: bigint): Promise<void>;
-    getFence(path: string): Promise<bigint | null>;
-    setFencingCounter(value: number): Promise<void>;
-    getFencingCounter(): Promise<number>;
-    ownedPaths(ownerId: string): Promise<OwnedPathsResult>;
     close(): void;
 }
 export {};

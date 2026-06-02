@@ -66,8 +66,14 @@ lifecycle events — its cooperative `revoke`, a forced `kill`, or its own
 const sub = client.subscribe('owner-1');
 sub.on('event', (e) => {
   // e.type is 'released' | 'killed' | 'revoke'; e.ownerId === 'owner-1'
-  if (e.type === 'revoke' || e.type === 'killed') {
-    // stop using the lock and release it
+  if (e.type === 'revoke') {
+    // Cooperative preemption: finish the in-flight unit of work ASAP, then
+    // release (e.g. releaseAll(ownerId, true)).
+  } else if (e.type === 'killed') {
+    // Forced preemption: your locks are ALREADY gone and your fencing token is
+    // now stale. Stop touching the backing store immediately and abort — do NOT
+    // keep working, and there is nothing to release (a late write would be
+    // rejected by the new holder's AssertFencing anyway).
   }
 });
 sub.on('error', (err) => console.error(err)); // attach this — EventEmitter throws otherwise
@@ -93,11 +99,15 @@ sub.close();
 | `assertFencing(ownerId, fencingToken, paths)` | `AssertResult` — `status: 'ok' \| 'fail'` |
 | `detectCycle(startOwnerId, maxDepth)` | `CycleResult` — `kind: 'none' \| 'cycle' \| 'truncated'` |
 | `isBlocking(path, owner, reason)` | `boolean` |
-| `incrFencingToken()` | `number` |
+| `incrFencingToken()` | `bigint` (PD-TSO token; exact beyond 2^53) |
 | `setWaitEdge(ownerId, conflictOwner, ttlMs, metadata?)` | `void` |
 | `clearWaitEdge(ownerId)` | `void` |
 | `isOwnerAlive(ownerId)` | `boolean` |
-| `requestRevoke(ownerId)` | `void` |
+| `requestRevoke(ownerId, claim?)` | `void` |
+| `inspectPath(path)` | `PathLockInfo` — write owner, read owners, fence, claim |
+| `listOwnerLocks(ownerId)` | `OwnerLocksResult` — `{ alive, locks }` |
+| `dumpLocks({ ownerPage?, maxEntries? })` | `LockEntry[]` — every live lock, auto-paginated |
+| `dumpLocksPages(ownerPage?)` | `AsyncGenerator<LockEntry[]>` — stream the dump one page at a time |
 | `subscribe(ownerId)` | `PathlockdSubscription` (typed EventEmitter) |
 | `health()` | `{ ok, detail }` |
 | `waitForReady(timeoutMs?)` / `close()` | — |
@@ -121,10 +131,29 @@ can be reported as deadlock cycles. Write acquires and non-empty fencing asserts
 also require a positive safe-integer fencing token; int64 responses are decoded
 exactly and rejected if they exceed JavaScript's safe integer range.
 
-`PathlockdDebugClient` (test-only; requires `PATHLOCKD_ENABLE_DEBUG=1` on the
-daemon) exposes `flush`, `expireOwner`, `deleteLockKey`, `setWriteOwner`,
-`getWriteOwner`, `setFence`, `getFence`, `setFencingCounter`,
-`getFencingCounter`, `ownedPaths` for fault-injection tests.
+### Inspection
+
+Three read-only calls expose live lock state for operators and tooling. They
+filter by owner liveness (so they reflect what would actually block) and never
+mutate daemon state:
+
+```ts
+// Path-centric: who holds this exact path?
+const info = await client.inspectPath('google_drive:/a/b');
+// info.writeOwner, info.readOwners[], info.fence (bigint|null), info.claimOwner
+
+// Owner-centric: what does this owner hold?
+const { alive, locks } = await client.listOwnerLocks('owner-1');
+
+// Cluster-wide: every live lock (auto-paginated; bounded by maxEntries).
+const all = await client.dumpLocks({ maxEntries: 50_000 });
+for (const e of all) console.log(e.owner, e.mode, e.path, e.fence);
+
+// Or stream a very large cluster a page at a time:
+for await (const page of client.dumpLocksPages()) {
+  for (const e of page) { /* ... */ }
+}
+```
 
 ## Development
 

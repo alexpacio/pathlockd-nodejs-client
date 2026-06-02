@@ -177,72 +177,55 @@ export interface WireHealthResponse {
   detail: string;
 }
 
-// Debug service messages.
+// Inspection / dump messages.
 
-export type WireFlushRequest = Record<string, never>;
-
-export interface WireFlushResponse {
-  deleted: string;
-}
-
-export interface WireExpireOwnerRequest {
-  ownerId: string;
-}
-
-export interface WireDeleteLockKeyRequest {
-  path: string;
-  mode: WireMode;
-  ownerId: string;
-}
-
-export interface WireSetWriteOwnerRequest {
-  path: string;
-  ownerId: string;
-}
-
-export interface WireGetWriteOwnerRequest {
+export interface WireInspectPathRequest {
   path: string;
 }
 
-export interface WireGetWriteOwnerResponse {
-  exists: boolean;
+export interface WireInspectPathResponse {
+  writeOwner: string;
+  readOwners: string[];
+  hasFence: boolean;
+  fence: string; // int64 kept as string (longs:String)
+  claimOwner: string;
+}
+
+export interface WireListOwnerLocksRequest {
   ownerId: string;
 }
 
-export interface WireSetFenceRequest {
+export interface WireOwnedLock {
   path: string;
-  value: number | string;
+  mode: string; // wire enum name (untrusted; decoded via MODE_FROM_WIRE)
 }
 
-export interface WireGetFenceRequest {
-  path: string;
-}
-
-export interface WireGetFenceResponse {
-  exists: boolean;
-  value: string;
-}
-
-export interface WireSetFencingCounterRequest {
-  value: number | string;
-}
-
-export type WireGetFencingCounterRequest = Record<string, never>;
-
-export interface WireGetFencingCounterResponse {
-  value: string;
-}
-
-export interface WireOwnedPathsRequest {
-  ownerId: string;
-}
-
-export interface WireOwnedPathsResponse {
-  members: string[];
+export interface WireListOwnerLocksResponse {
   alive: boolean;
+  locks: WireOwnedLock[];
 }
 
-export type WireDebugAck = Record<string, never>;
+export interface WireDumpLocksRequest {
+  // proto `bytes`: proto-loader accepts a Buffer/Uint8Array on the wire. Empty
+  // for the first page; echoed back from the previous response to continue.
+  cursor: Buffer | Uint8Array;
+  ownerPage: number;
+}
+
+export interface WireLockEntry {
+  owner: string;
+  path: string;
+  mode: string;
+  hasFence: boolean;
+  fence: string; // int64 kept as string (longs:String)
+}
+
+export interface WireDumpLocksResponse {
+  entries: WireLockEntry[];
+  // proto `bytes` is decoded as a Buffer; empty Buffer once `done` is true.
+  nextCursor: Buffer;
+  done: boolean;
+}
 
 // ---------------------------------------------------------------------------
 // Typed gRPC clients
@@ -278,21 +261,11 @@ export interface PathLockServiceClient extends GrpcClientBase {
   clearWaitEdge: UnaryMethod<WireClearWaitEdgeRequest, WireClearWaitEdgeResponse>;
   isOwnerAlive: UnaryMethod<WireIsOwnerAliveRequest, WireIsOwnerAliveResponse>;
   requestRevoke: UnaryMethod<WireRequestRevokeRequest, WireRequestRevokeResponse>;
+  inspectPath: UnaryMethod<WireInspectPathRequest, WireInspectPathResponse>;
+  listOwnerLocks: UnaryMethod<WireListOwnerLocksRequest, WireListOwnerLocksResponse>;
+  dumpLocks: UnaryMethod<WireDumpLocksRequest, WireDumpLocksResponse>;
   subscribe(request: WireSubscribeRequest): grpc.ClientReadableStream<WireEvent>;
   health: UnaryMethod<WireHealthRequest, WireHealthResponse>;
-}
-
-export interface PathLockDebugServiceClient extends GrpcClientBase {
-  flush: UnaryMethod<WireFlushRequest, WireFlushResponse>;
-  expireOwner: UnaryMethod<WireExpireOwnerRequest, WireDebugAck>;
-  deleteLockKey: UnaryMethod<WireDeleteLockKeyRequest, WireDebugAck>;
-  setWriteOwner: UnaryMethod<WireSetWriteOwnerRequest, WireDebugAck>;
-  getWriteOwner: UnaryMethod<WireGetWriteOwnerRequest, WireGetWriteOwnerResponse>;
-  setFence: UnaryMethod<WireSetFenceRequest, WireDebugAck>;
-  getFence: UnaryMethod<WireGetFenceRequest, WireGetFenceResponse>;
-  setFencingCounter: UnaryMethod<WireSetFencingCounterRequest, WireDebugAck>;
-  getFencingCounter: UnaryMethod<WireGetFencingCounterRequest, WireGetFencingCounterResponse>;
-  ownedPaths: UnaryMethod<WireOwnedPathsRequest, WireOwnedPathsResponse>;
 }
 
 /** Constructor shape shared by proto-loader's generated service clients. */
@@ -305,7 +278,6 @@ export type ServiceClientConstructor<C> = new (
 /** The `pathlockd.v1` package namespace. */
 export interface PathlockdPackage {
   PathLock: ServiceClientConstructor<PathLockServiceClient>;
-  PathLockDebug: ServiceClientConstructor<PathLockDebugServiceClient>;
 }
 
 /** Bundled proto, resolved relative to the compiled output (dist/ -> ../proto). */
@@ -338,6 +310,11 @@ export function loadPathlockdProto(): PathlockdPackage {
 export const MODE_TO_WIRE: Record<LockMode, WireMode> = {
   write: 'MODE_WRITE',
   read: 'MODE_READ',
+};
+
+export const MODE_FROM_WIRE: Record<string, LockMode> = {
+  MODE_WRITE: 'write',
+  MODE_READ: 'read',
 };
 
 export const STATE_TO_WIRE: Record<LockState, WireLockState> = {
@@ -390,13 +367,6 @@ export function decodeWireEnum<T extends string>(
   return decoded;
 }
 
-export function toWireInt64(value: number, fieldName: string): string {
-  if (!Number.isSafeInteger(value)) {
-    throw new Error(`${fieldName} must be a safe integer`);
-  }
-  return String(value);
-}
-
 export function toWireUint64(value: number, fieldName: string): string {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(`${fieldName} must be a non-negative safe integer`);
@@ -409,19 +379,6 @@ export function toWirePositiveUint64(value: number, fieldName: string): string {
     throw new Error(`${fieldName} must be a positive safe integer`);
   }
   return String(value);
-}
-
-export function wireInt64ToSafeNumber(value: unknown, fieldName: string): number {
-  const parsed =
-    typeof value === 'number'
-      ? value
-      : typeof value === 'string'
-        ? Number(value)
-        : Number.NaN;
-  if (!Number.isSafeInteger(parsed)) {
-    throw new Error(`${fieldName} is outside JavaScript's safe integer range: ${String(value)}`);
-  }
-  return parsed;
 }
 
 const INT64_MAX = 9223372036854775807n;

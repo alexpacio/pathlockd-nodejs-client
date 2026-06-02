@@ -33,13 +33,11 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.EVENT_TYPE_FROM_WIRE = exports.CYCLE_KIND_FROM_WIRE = exports.ASSERT_STATUS_FROM_WIRE = exports.RENEW_STATUS_FROM_WIRE = exports.ACQUIRE_STATUS_FROM_WIRE = exports.STATE_TO_WIRE = exports.MODE_TO_WIRE = exports.PROTO_PATH = void 0;
+exports.EVENT_TYPE_FROM_WIRE = exports.CYCLE_KIND_FROM_WIRE = exports.ASSERT_STATUS_FROM_WIRE = exports.RENEW_STATUS_FROM_WIRE = exports.ACQUIRE_STATUS_FROM_WIRE = exports.STATE_TO_WIRE = exports.MODE_FROM_WIRE = exports.MODE_TO_WIRE = exports.PROTO_PATH = void 0;
 exports.loadPathlockdProto = loadPathlockdProto;
 exports.decodeWireEnum = decodeWireEnum;
-exports.toWireInt64 = toWireInt64;
 exports.toWireUint64 = toWireUint64;
 exports.toWirePositiveUint64 = toWirePositiveUint64;
-exports.wireInt64ToSafeNumber = wireInt64ToSafeNumber;
 exports.wireInt64ToBigInt = wireInt64ToBigInt;
 exports.bigintToWireInt64 = bigintToWireInt64;
 exports.buildCredentials = buildCredentials;
@@ -73,6 +71,10 @@ function loadPathlockdProto() {
 exports.MODE_TO_WIRE = {
     write: 'MODE_WRITE',
     read: 'MODE_READ',
+};
+exports.MODE_FROM_WIRE = {
+    MODE_WRITE: 'write',
+    MODE_READ: 'read',
 };
 exports.STATE_TO_WIRE = {
     new: 'LOCK_STATE_NEW',
@@ -111,12 +113,6 @@ function decodeWireEnum(values, value, fieldName) {
     }
     return decoded;
 }
-function toWireInt64(value, fieldName) {
-    if (!Number.isSafeInteger(value)) {
-        throw new Error(`${fieldName} must be a safe integer`);
-    }
-    return String(value);
-}
 function toWireUint64(value, fieldName) {
     if (!Number.isSafeInteger(value) || value < 0) {
         throw new Error(`${fieldName} must be a non-negative safe integer`);
@@ -128,17 +124,6 @@ function toWirePositiveUint64(value, fieldName) {
         throw new Error(`${fieldName} must be a positive safe integer`);
     }
     return String(value);
-}
-function wireInt64ToSafeNumber(value, fieldName) {
-    const parsed = typeof value === 'number'
-        ? value
-        : typeof value === 'string'
-            ? Number(value)
-            : Number.NaN;
-    if (!Number.isSafeInteger(parsed)) {
-        throw new Error(`${fieldName} is outside JavaScript's safe integer range: ${String(value)}`);
-    }
-    return parsed;
 }
 const INT64_MAX = 9223372036854775807n;
 const INT64_MIN = -9223372036854775808n;

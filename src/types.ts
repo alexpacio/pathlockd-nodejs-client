@@ -93,6 +93,47 @@ export interface HealthResult {
 }
 
 /**
+ * A read-only snapshot of the lock state at one exact path
+ * ({@link PathlockdClient.inspectPath}). Filtered by owner liveness, so it
+ * reflects what would actually block; it never mutates daemon state.
+ */
+export interface PathLockInfo {
+  /** Live write owner of this exact path, or `null` if none holds it. */
+  writeOwner: string | null;
+  /** Live read owners of this exact path. Reads are point-only, so ancestors and descendants are excluded. */
+  readOwners: string[];
+  /**
+   * Current fencing token recorded for this path, or `null` if none. The fence
+   * can outlive the lock, so this may be set even when `writeOwner` is `null`.
+   */
+  fence: FencingToken | null;
+  /** Live preemption claimant reserving this path for an in-flight revoke, or `null`. */
+  claimOwner: string | null;
+}
+
+/** One lock held by an owner ({@link PathlockdClient.listOwnerLocks}). */
+export interface OwnedLockInfo {
+  path: string;
+  mode: LockMode;
+}
+
+/** Result of {@link PathlockdClient.listOwnerLocks}. */
+export interface OwnerLocksResult {
+  /** Whether the owner's liveness lease is currently present. */
+  alive: boolean;
+  locks: OwnedLockInfo[];
+}
+
+/** One lock in a cluster-wide dump ({@link PathlockdClient.dumpLocks}). */
+export interface LockEntry {
+  owner: string;
+  path: string;
+  mode: LockMode;
+  /** Fencing token for write locks; `null` for reads. */
+  fence: FencingToken | null;
+}
+
+/**
  * An optional preemption claim passed to {@link PathlockdClient.requestRevoke}.
  * The daemon reserves `path` for `claimantOwnerId` until that owner acquires
  * it, so the revoked victim cannot re-grab the path first.

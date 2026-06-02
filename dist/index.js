@@ -14,12 +14,11 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
     for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PROTO_PATH = exports.PathlockdDebugClient = exports.PathlockdSubscription = exports.PathlockdClient = void 0;
+exports.PROTO_PATH = exports.PathlockdSubscription = exports.PathlockdClient = void 0;
 __exportStar(require("./types"), exports);
 var client_1 = require("./client");
 Object.defineProperty(exports, "PathlockdClient", { enumerable: true, get: function () { return client_1.PathlockdClient; } });
 Object.defineProperty(exports, "PathlockdSubscription", { enumerable: true, get: function () { return client_1.PathlockdSubscription; } });
-Object.defineProperty(exports, "PathlockdDebugClient", { enumerable: true, get: function () { return client_1.PathlockdDebugClient; } });
 var proto_1 = require("./proto");
 Object.defineProperty(exports, "PROTO_PATH", { enumerable: true, get: function () { return proto_1.PROTO_PATH; } });
 //# sourceMappingURL=index.js.map

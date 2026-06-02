@@ -1,8 +1,14 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PathlockdDebugClient = exports.PathlockdClient = exports.PathlockdSubscription = void 0;
+exports.PathlockdClient = exports.PathlockdSubscription = void 0;
 const events_1 = require("events");
 const proto_1 = require("./proto");
+/**
+ * Safety cap for {@link PathlockdClient.dumpLocks} when the caller does not set
+ * one: an unbounded cluster dump could exhaust memory, so collection stops and
+ * throws past this many entries. Page manually with a higher cap if needed.
+ */
+const DUMP_DEFAULT_MAX_ENTRIES = 100_000;
 /** Promisify a callback-style unary call, dispatched by method name on `client`. */
 function unary(client, method, request) {
     return new Promise((resolve, reject) => {
@@ -181,6 +187,79 @@ class PathlockdClient {
         return Boolean(res.alive);
     }
     /**
+     * Read-only snapshot of the lock state at one exact path: live write owner,
+     * live read owners, fence value and any preemption claim. Filtered by owner
+     * liveness; never mutates daemon state.
+     */
+    async inspectPath(path) {
+        const res = await unary(this.client, 'inspectPath', { path });
+        return {
+            writeOwner: res.writeOwner ? res.writeOwner : null,
+            readOwners: res.readOwners ?? [],
+            fence: res.hasFence ? (0, proto_1.wireInt64ToBigInt)(res.fence, 'InspectPathResponse.fence') : null,
+            claimOwner: res.claimOwner ? res.claimOwner : null,
+        };
+    }
+    /**
+     * Read-only listing of every lock recorded for one owner, plus whether its
+     * liveness lease is still present. The owner-centric companion to
+     * {@link inspectPath}.
+     */
+    async listOwnerLocks(ownerId) {
+        const res = await unary(this.client, 'listOwnerLocks', { ownerId });
+        const locks = (res.locks ?? []).map((l) => ({
+            path: l.path,
+            mode: (0, proto_1.decodeWireEnum)(proto_1.MODE_FROM_WIRE, l.mode, 'OwnedLock.mode'),
+        }));
+        return { alive: Boolean(res.alive), locks };
+    }
+    /**
+     * Dump every live lock across the cluster, auto-paginating internally. Each
+     * entry is one (owner, mode, path) holding with the fence for write locks.
+     *
+     * Best-effort observability: the daemon reads each owner in its own snapshot,
+     * so the result is near-real-time, not a single global instant. To bound
+     * memory, collection stops and throws once `maxEntries` entries are seen
+     * (default {@link DUMP_DEFAULT_MAX_ENTRIES}); for very large clusters drive
+     * {@link dumpLocksPages} directly and stream instead.
+     */
+    async dumpLocks(opts = {}) {
+        const maxEntries = opts.maxEntries ?? DUMP_DEFAULT_MAX_ENTRIES;
+        const out = [];
+        for await (const page of this.dumpLocksPages(opts.ownerPage)) {
+            for (const entry of page) {
+                if (out.length >= maxEntries) {
+                    throw new Error(`dumpLocks exceeded maxEntries (${maxEntries}); raise the cap or page with dumpLocksPages`);
+                }
+                out.push(entry);
+            }
+        }
+        return out;
+    }
+    /**
+     * Lower-level dump: an async generator yielding one decoded page of lock
+     * entries per daemon round-trip. Lets callers stream an arbitrarily large
+     * cluster without buffering it all. `ownerPage` sets how many owners the
+     * daemon scans per page (0 / omitted uses the server default).
+     */
+    async *dumpLocksPages(ownerPage = 0) {
+        let cursor = Buffer.alloc(0);
+        for (;;) {
+            const res = await unary(this.client, 'dumpLocks', { cursor, ownerPage });
+            const page = (res.entries ?? []).map((e) => ({
+                owner: e.owner,
+                path: e.path,
+                mode: (0, proto_1.decodeWireEnum)(proto_1.MODE_FROM_WIRE, e.mode, 'LockEntry.mode'),
+                fence: e.hasFence ? (0, proto_1.wireInt64ToBigInt)(e.fence, 'LockEntry.fence') : null,
+            }));
+            if (page.length > 0)
+                yield page;
+            if (res.done)
+                return;
+            cursor = res.nextCursor;
+        }
+    }
+    /**
      * Publish a cooperative REVOKE for `ownerId`. When `claim` is supplied, the
      * daemon also reserves `claim.path` for `claim.claimantOwnerId` (for
      * `claim.ttlMs`, or a short default) before publishing, so the revoked victim
@@ -214,61 +293,4 @@ class PathlockdClient {
     }
 }
 exports.PathlockdClient = PathlockdClient;
-class PathlockdDebugClient {
-    client;
-    constructor(opts) {
-        const ns = (0, proto_1.loadPathlockdProto)();
-        this.client = new ns.PathLockDebug(opts.endpoint, (0, proto_1.buildCredentials)(opts.tls ?? false), opts.channelOptions ?? {});
-    }
-    waitForReady(timeoutMs = 5000) {
-        return new Promise((resolve, reject) => {
-            const deadline = new Date(Date.now() + timeoutMs);
-            this.client.waitForReady(deadline, (err) => (err ? reject(err) : resolve()));
-        });
-    }
-    async flush() {
-        const res = await unary(this.client, 'flush', {});
-        return (0, proto_1.wireInt64ToSafeNumber)(res.deleted ?? '0', 'FlushResponse.deleted');
-    }
-    async expireOwner(ownerId) {
-        await unary(this.client, 'expireOwner', { ownerId });
-    }
-    async deleteLockKey(path, mode, ownerId = '') {
-        await unary(this.client, 'deleteLockKey', { path, mode: proto_1.MODE_TO_WIRE[mode], ownerId });
-    }
-    async setWriteOwner(path, ownerId) {
-        await unary(this.client, 'setWriteOwner', { path, ownerId });
-    }
-    async getWriteOwner(path) {
-        const res = await unary(this.client, 'getWriteOwner', { path });
-        return res.exists ? res.ownerId : null;
-    }
-    async setFence(path, value) {
-        await unary(this.client, 'setFence', {
-            path,
-            value: (0, proto_1.bigintToWireInt64)(value, 'SetFence.value'),
-        });
-    }
-    async getFence(path) {
-        const res = await unary(this.client, 'getFence', { path });
-        return res.exists ? (0, proto_1.wireInt64ToBigInt)(res.value, 'GetFenceResponse.value') : null;
-    }
-    async setFencingCounter(value) {
-        await unary(this.client, 'setFencingCounter', {
-            value: (0, proto_1.toWireInt64)(value, 'SetFencingCounter.value'),
-        });
-    }
-    async getFencingCounter() {
-        const res = await unary(this.client, 'getFencingCounter', {});
-        return (0, proto_1.wireInt64ToSafeNumber)(res.value ?? '0', 'GetFencingCounterResponse.value');
-    }
-    async ownedPaths(ownerId) {
-        const res = await unary(this.client, 'ownedPaths', { ownerId });
-        return { members: res.members ?? [], alive: Boolean(res.alive) };
-    }
-    close() {
-        this.client.close();
-    }
-}
-exports.PathlockdDebugClient = PathlockdDebugClient;
 //# sourceMappingURL=client.js.map
