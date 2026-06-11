@@ -13,6 +13,7 @@ export type RenewStatus = 'ok' | 'lost';
 export type AssertStatus = 'ok' | 'fail';
 export type CycleKind = 'none' | 'cycle' | 'truncated';
 export type LockEventType = 'released' | 'killed' | 'revoke';
+export type SetClaimStatus = 'ok' | 'held';
 /**
  * A fencing token is the PD TSO version returned by {@link PathlockdClient.incrFencingToken}.
  * It is a packed i64 timestamp (`(physical_ms << 18) | logical`) that routinely exceeds
@@ -131,6 +132,17 @@ export interface LockEntry {
   mode: LockMode;
   /** Fencing token for write locks; `null` for reads. */
   fence: FencingToken | null;
+}
+
+/**
+ * Result of {@link PathlockdClient.setClaim}. Claims are claim-if-absent: a
+ * live claim by another claimant is reported (`held`), never overwritten;
+ * re-planting one's own claim re-arms its TTL and reports `ok`.
+ */
+export interface SetClaimResult {
+  status: SetClaimStatus;
+  /** The current claimant when status is `held`; `null` on `ok`. */
+  claimOwner: string | null;
 }
 
 /**

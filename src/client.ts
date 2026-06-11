@@ -13,9 +13,11 @@ import {
   MODE_TO_WIRE,
   PathLockServiceClient,
   RENEW_STATUS_FROM_WIRE,
+  SET_CLAIM_STATUS_FROM_WIRE,
   STATE_TO_WIRE,
   bigintToWireInt64,
   toWirePositiveUint64,
+  toWireUint64,
   UnaryMethod,
   WireEvent,
   WireReleaseRequest,
@@ -37,6 +39,7 @@ import {
   PreemptionClaim,
   ReleaseRequest,
   RenewResult,
+  SetClaimResult,
   SetWaitEdgeMetadata,
 } from './types';
 
@@ -261,6 +264,32 @@ export class PathlockdClient {
 
   async clearWaitEdge(ownerId: string): Promise<void> {
     await unary(this.client, 'clearWaitEdge', { ownerId });
+  }
+
+  /**
+   * Plant an anti-starvation claim reserving `path` for `claimantOwnerId`.
+   * Claim-if-absent: a live claim by another claimant is reported as `held`
+   * (never overwritten); re-planting one's own claim re-arms its TTL. Claims
+   * are TTL-governed only — the claimant needs no lease, so a pure waiter can
+   * reserve the path it is queued for, and a crashed claimant's reservation
+   * expires on its own. The claimant's own acquire consumes the claim
+   * atomically on grant.
+   */
+  async setClaim(path: string, claimantOwnerId: string, ttlMs = 0): Promise<SetClaimResult> {
+    const res = await unary(this.client, 'setClaim', {
+      path,
+      claimantOwnerId,
+      ttlMs: toWireUint64(ttlMs, 'SetClaim.ttlMs'),
+    });
+    return {
+      status: decodeWireEnum(SET_CLAIM_STATUS_FROM_WIRE, res.status, 'SetClaimResponse.status'),
+      claimOwner: res.claimOwner ? res.claimOwner : null,
+    };
+  }
+
+  /** Clear `claimantOwnerId`'s own claim on `path`; a foreign claim is untouched. */
+  async clearClaim(path: string, claimantOwnerId: string): Promise<void> {
+    await unary(this.client, 'clearClaim', { path, claimantOwnerId });
   }
 
   async isOwnerAlive(ownerId: string): Promise<boolean> {

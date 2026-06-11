@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import * as grpc from '@grpc/grpc-js';
 import { WireEvent } from './proto';
-import { AcquireParams, AcquireResult, AssertResult, CycleResult, HealthResult, LockEntry, LockEvent, OwnerLocksResult, PathLockInfo, PathlockdClientOptions, PreemptionClaim, ReleaseRequest, RenewResult, SetWaitEdgeMetadata } from './types';
+import { AcquireParams, AcquireResult, AssertResult, CycleResult, HealthResult, LockEntry, LockEvent, OwnerLocksResult, PathLockInfo, PathlockdClientOptions, PreemptionClaim, ReleaseRequest, RenewResult, SetClaimResult, SetWaitEdgeMetadata } from './types';
 /** Event name → listener signature for {@link PathlockdSubscription}. */
 interface SubscriptionEvents {
     event: (e: LockEvent) => void;
@@ -52,6 +52,18 @@ export declare class PathlockdClient {
     incrFencingToken(): Promise<bigint>;
     setWaitEdge(ownerId: string, conflictOwner: string, ttlMs: number, metadata?: SetWaitEdgeMetadata): Promise<void>;
     clearWaitEdge(ownerId: string): Promise<void>;
+    /**
+     * Plant an anti-starvation claim reserving `path` for `claimantOwnerId`.
+     * Claim-if-absent: a live claim by another claimant is reported as `held`
+     * (never overwritten); re-planting one's own claim re-arms its TTL. Claims
+     * are TTL-governed only — the claimant needs no lease, so a pure waiter can
+     * reserve the path it is queued for, and a crashed claimant's reservation
+     * expires on its own. The claimant's own acquire consumes the claim
+     * atomically on grant.
+     */
+    setClaim(path: string, claimantOwnerId: string, ttlMs?: number): Promise<SetClaimResult>;
+    /** Clear `claimantOwnerId`'s own claim on `path`; a foreign claim is untouched. */
+    clearClaim(path: string, claimantOwnerId: string): Promise<void>;
     isOwnerAlive(ownerId: string): Promise<boolean>;
     /**
      * Read-only snapshot of the lock state at one exact path: live write owner,

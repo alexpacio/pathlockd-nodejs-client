@@ -182,6 +182,30 @@ class PathlockdClient {
     async clearWaitEdge(ownerId) {
         await unary(this.client, 'clearWaitEdge', { ownerId });
     }
+    /**
+     * Plant an anti-starvation claim reserving `path` for `claimantOwnerId`.
+     * Claim-if-absent: a live claim by another claimant is reported as `held`
+     * (never overwritten); re-planting one's own claim re-arms its TTL. Claims
+     * are TTL-governed only — the claimant needs no lease, so a pure waiter can
+     * reserve the path it is queued for, and a crashed claimant's reservation
+     * expires on its own. The claimant's own acquire consumes the claim
+     * atomically on grant.
+     */
+    async setClaim(path, claimantOwnerId, ttlMs = 0) {
+        const res = await unary(this.client, 'setClaim', {
+            path,
+            claimantOwnerId,
+            ttlMs: (0, proto_1.toWireUint64)(ttlMs, 'SetClaim.ttlMs'),
+        });
+        return {
+            status: (0, proto_1.decodeWireEnum)(proto_1.SET_CLAIM_STATUS_FROM_WIRE, res.status, 'SetClaimResponse.status'),
+            claimOwner: res.claimOwner ? res.claimOwner : null,
+        };
+    }
+    /** Clear `claimantOwnerId`'s own claim on `path`; a foreign claim is untouched. */
+    async clearClaim(path, claimantOwnerId) {
+        await unary(this.client, 'clearClaim', { path, claimantOwnerId });
+    }
     async isOwnerAlive(ownerId) {
         const res = await unary(this.client, 'isOwnerAlive', { ownerId });
         return Boolean(res.alive);

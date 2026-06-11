@@ -10,6 +10,7 @@ import {
   LockMode,
   LockState,
   RenewStatus,
+  SetClaimStatus,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -149,6 +150,25 @@ export interface WireIsOwnerAliveResponse {
   alive: boolean;
 }
 
+export interface WireSetClaimRequest {
+  path: string;
+  claimantOwnerId: string;
+  // uint64 encoded as string (longs:String); "0" selects the daemon default.
+  ttlMs: string;
+}
+
+export interface WireSetClaimResponse {
+  status: string;
+  claimOwner: string;
+}
+
+export interface WireClearClaimRequest {
+  path: string;
+  claimantOwnerId: string;
+}
+
+export type WireClearClaimResponse = Record<string, never>;
+
 export interface WireRequestRevokeRequest {
   ownerId: string;
   // Optional preemption claim: reserve claimPath for claimantOwnerId until the
@@ -259,6 +279,8 @@ export interface PathLockServiceClient extends GrpcClientBase {
   incrFencingToken: UnaryMethod<WireIncrFencingTokenRequest, WireIncrFencingTokenResponse>;
   setWaitEdge: UnaryMethod<WireSetWaitEdgeRequest, WireSetWaitEdgeResponse>;
   clearWaitEdge: UnaryMethod<WireClearWaitEdgeRequest, WireClearWaitEdgeResponse>;
+  setClaim: UnaryMethod<WireSetClaimRequest, WireSetClaimResponse>;
+  clearClaim: UnaryMethod<WireClearClaimRequest, WireClearClaimResponse>;
   isOwnerAlive: UnaryMethod<WireIsOwnerAliveRequest, WireIsOwnerAliveResponse>;
   requestRevoke: UnaryMethod<WireRequestRevokeRequest, WireRequestRevokeResponse>;
   inspectPath: UnaryMethod<WireInspectPathRequest, WireInspectPathResponse>;
@@ -348,6 +370,11 @@ export const EVENT_TYPE_FROM_WIRE: Record<string, LockEventType> = {
   EVENT_TYPE_RELEASED: 'released',
   EVENT_TYPE_KILLED: 'killed',
   EVENT_TYPE_REVOKE: 'revoke',
+};
+
+export const SET_CLAIM_STATUS_FROM_WIRE: Record<string, SetClaimStatus> = {
+  SET_CLAIM_STATUS_OK: 'ok',
+  SET_CLAIM_STATUS_HELD: 'held',
 };
 
 export function decodeWireEnum<T extends string>(

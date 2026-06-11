@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.EVENT_TYPE_FROM_WIRE = exports.CYCLE_KIND_FROM_WIRE = exports.ASSERT_STATUS_FROM_WIRE = exports.RENEW_STATUS_FROM_WIRE = exports.ACQUIRE_STATUS_FROM_WIRE = exports.STATE_TO_WIRE = exports.MODE_FROM_WIRE = exports.MODE_TO_WIRE = exports.PROTO_PATH = void 0;
+exports.SET_CLAIM_STATUS_FROM_WIRE = exports.EVENT_TYPE_FROM_WIRE = exports.CYCLE_KIND_FROM_WIRE = exports.ASSERT_STATUS_FROM_WIRE = exports.RENEW_STATUS_FROM_WIRE = exports.ACQUIRE_STATUS_FROM_WIRE = exports.STATE_TO_WIRE = exports.MODE_FROM_WIRE = exports.MODE_TO_WIRE = exports.PROTO_PATH = void 0;
 exports.loadPathlockdProto = loadPathlockdProto;
 exports.decodeWireEnum = decodeWireEnum;
 exports.toWireUint64 = toWireUint64;
@@ -102,6 +102,10 @@ exports.EVENT_TYPE_FROM_WIRE = {
     EVENT_TYPE_RELEASED: 'released',
     EVENT_TYPE_KILLED: 'killed',
     EVENT_TYPE_REVOKE: 'revoke',
+};
+exports.SET_CLAIM_STATUS_FROM_WIRE = {
+    SET_CLAIM_STATUS_OK: 'ok',
+    SET_CLAIM_STATUS_HELD: 'held',
 };
 function decodeWireEnum(values, value, fieldName) {
     if (typeof value !== 'string') {
