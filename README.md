@@ -19,7 +19,8 @@ npm install pathlockd-nodejs-client
 ```
 
 The published package ships prebuilt JS + type declarations in `dist/`, so
-installing from a Git ref needs no build step. Linux **x86_64** only.
+installing from a Git ref needs no build step. Linux and macOS are supported on
+**x86_64** and **arm64**.
 
 ## Quick start
 
@@ -92,16 +93,18 @@ sub.close();
 | Method | Returns |
 |---|---|
 | `acquire(params)` | `AcquireResult` — `status: 'ok' \| 'conflict' \| 'lost'` |
-| `release(ownerId, requests, delWaitKey?)` | `void` |
-| `releaseAll(ownerId, delWaitKey?)` | `void` |
-| `renew(ownerId, ttlMs)` | `RenewResult` — `status: 'ok' \| 'lost'` |
-| `forceRelease(victimId)` | `void` |
+| `release(ownerId, requests, delWaitKeyOrOptions?)` | `void` |
+| `releaseAll(ownerId, delWaitKeyOrOptions?)` | `void` |
+| `renew(ownerId, ttlMs, options?)` | `RenewResult` — `status: 'ok' \| 'lost'` |
+| `forceRelease(victimId, options?)` | `void` |
 | `assertFencing(ownerId, fencingToken, paths)` | `AssertResult` — `status: 'ok' \| 'fail'` |
 | `detectCycle(startOwnerId, maxDepth)` | `CycleResult` — `kind: 'none' \| 'cycle' \| 'truncated'` |
 | `isBlocking(path, owner, reason)` | `boolean` |
-| `incrFencingToken()` | `bigint` (PD-TSO token; exact beyond 2^53) |
-| `setWaitEdge(ownerId, conflictOwner, ttlMs, metadata?)` | `void` |
-| `clearWaitEdge(ownerId)` | `void` |
+| `incrFencingToken(options?)` | `bigint` (PD-TSO token; exact beyond 2^53) |
+| `setWaitEdge(ownerId, conflictOwner, ttlMs, metadata?, options?)` | `void` |
+| `clearWaitEdge(ownerId, options?)` | `void` |
+| `setClaim(path, claimantOwnerId, ttlMsOrOptions?)` | `SetClaimResult` — `status: 'ok' \| 'held'` |
+| `clearClaim(path, claimantOwnerId, options?)` | `void` |
 | `isOwnerAlive(ownerId)` | `boolean` |
 | `requestRevoke(ownerId, claim?)` | `void` |
 | `inspectPath(path)` | `PathLockInfo` — write owner, read owners, fence, claim |
@@ -115,6 +118,23 @@ sub.close();
 All request/result shapes are exported types (`AcquireParams`, `AcquireResult`,
 `LockRequest`, `LockMode`, `LockState`, `RenewResult`, `AssertResult`,
 `CycleResult`, `LockEvent`, …).
+
+Mutating RPCs that support daemon-side apply-once semantics accept
+`idempotencyKey` either in their params object (`acquire`) or an optional
+options object. For `renew`, `options.domains` can also target the renew fan-out
+at the routing domains where the owner holds locks:
+
+```ts
+await client.renew('owner-1', 10_000, {
+  domains: ['google_drive'],
+  idempotencyKey: 'owner-1:renew:42',
+});
+
+await client.releaseAll('owner-1', {
+  delWaitKey: true,
+  idempotencyKey: 'owner-1:release-all:42',
+});
+```
 
 For deadlock detection, pass the `path` and `reason` from a conflict response as
 `metadata`:

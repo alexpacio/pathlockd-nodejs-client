@@ -49,6 +49,7 @@ export interface WireAcquireRequest {
   fencingToken: number | string;
   releaseRequests: WireReleaseRequest[];
   emitRelease: boolean;
+  idempotencyKey?: string;
 }
 
 export interface WireAcquireResponse {
@@ -62,11 +63,13 @@ export interface WireReleaseLocksRequest {
   ownerId: string;
   requests: WireReleaseRequest[];
   delWaitKey: boolean;
+  idempotencyKey?: string;
 }
 
 export interface WireReleaseAllRequest {
   ownerId: string;
   delWaitKey: boolean;
+  idempotencyKey?: string;
 }
 
 export type WireReleaseResponse = Record<string, never>;
@@ -74,6 +77,8 @@ export type WireReleaseResponse = Record<string, never>;
 export interface WireRenewRequest {
   ownerId: string;
   ttlMs: number | string;
+  domains: string[];
+  idempotencyKey?: string;
 }
 
 export interface WireRenewResponse {
@@ -84,6 +89,7 @@ export interface WireRenewResponse {
 
 export interface WireForceReleaseRequest {
   victimId: string;
+  idempotencyKey?: string;
 }
 
 export type WireForceReleaseResponse = Record<string, never>;
@@ -120,7 +126,9 @@ export interface WireIsBlockingResponse {
   blocking: boolean;
 }
 
-export type WireIncrFencingTokenRequest = Record<string, never>;
+export interface WireIncrFencingTokenRequest {
+  idempotencyKey?: string;
+}
 
 export interface WireIncrFencingTokenResponse {
   token: string;
@@ -132,12 +140,14 @@ export interface WireSetWaitEdgeRequest {
   ttlMs: number | string;
   conflictPath?: string;
   reason?: string;
+  idempotencyKey?: string;
 }
 
 export type WireSetWaitEdgeResponse = Record<string, never>;
 
 export interface WireClearWaitEdgeRequest {
   ownerId: string;
+  idempotencyKey?: string;
 }
 
 export type WireClearWaitEdgeResponse = Record<string, never>;
@@ -155,6 +165,7 @@ export interface WireSetClaimRequest {
   claimantOwnerId: string;
   // uint64 encoded as string (longs:String); "0" selects the daemon default.
   ttlMs: string;
+  idempotencyKey?: string;
 }
 
 export interface WireSetClaimResponse {
@@ -165,6 +176,7 @@ export interface WireSetClaimResponse {
 export interface WireClearClaimRequest {
   path: string;
   claimantOwnerId: string;
+  idempotencyKey?: string;
 }
 
 export type WireClearClaimResponse = Record<string, never>;

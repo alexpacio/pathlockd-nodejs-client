@@ -30,6 +30,7 @@ import {
   AssertResult,
   CycleResult,
   HealthResult,
+  IdempotentRequestOptions,
   LockEntry,
   LockEvent,
   OwnedLockInfo,
@@ -37,8 +38,11 @@ import {
   PathLockInfo,
   PathlockdClientOptions,
   PreemptionClaim,
+  ReleaseOptions,
   ReleaseRequest,
+  RenewOptions,
   RenewResult,
+  SetClaimOptions,
   SetClaimResult,
   SetWaitEdgeMetadata,
 } from './types';
@@ -81,6 +85,24 @@ function assertPositiveFencingToken(value: bigint, fieldName: string): void {
   if (typeof value !== 'bigint' || value <= 0n) {
     throw new Error(`${fieldName} must be a positive bigint`);
   }
+}
+
+function idempotencyFields(options?: IdempotentRequestOptions): { idempotencyKey?: string } {
+  return options?.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {};
+}
+
+function normalizeReleaseOptions(optionsOrDelWaitKey?: boolean | ReleaseOptions): ReleaseOptions {
+  if (typeof optionsOrDelWaitKey === 'boolean') {
+    return { delWaitKey: optionsOrDelWaitKey };
+  }
+  return optionsOrDelWaitKey ?? {};
+}
+
+function normalizeSetClaimOptions(ttlMsOrOptions?: number | SetClaimOptions): SetClaimOptions {
+  if (typeof ttlMsOrOptions === 'number') {
+    return { ttlMs: ttlMsOrOptions };
+  }
+  return ttlMsOrOptions ?? {};
 }
 
 /** Event name → listener signature for {@link PathlockdSubscription}. */
@@ -173,6 +195,7 @@ export class PathlockdClient {
       fencingToken: bigintToWireInt64(params.fencingToken, 'Acquire.fencingToken'),
       releaseRequests: (params.releaseRequests ?? []).map(wireRelease),
       emitRelease: params.emitRelease ?? false,
+      ...idempotencyFields(params),
     });
     return {
       status: decodeWireEnum(ACQUIRE_STATUS_FROM_WIRE, res.status, 'AcquireResponse.status'),
@@ -182,22 +205,42 @@ export class PathlockdClient {
     };
   }
 
-  async release(ownerId: string, requests: ReleaseRequest[], delWaitKey = false): Promise<void> {
+  async release(ownerId: string, requests: ReleaseRequest[], delWaitKey?: boolean): Promise<void>;
+  async release(ownerId: string, requests: ReleaseRequest[], options?: ReleaseOptions): Promise<void>;
+  async release(
+    ownerId: string,
+    requests: ReleaseRequest[],
+    optionsOrDelWaitKey: boolean | ReleaseOptions = false,
+  ): Promise<void> {
+    const options = normalizeReleaseOptions(optionsOrDelWaitKey);
     await unary(this.client, 'release', {
       ownerId,
       requests: requests.map(wireRelease),
-      delWaitKey,
+      delWaitKey: options.delWaitKey ?? false,
+      ...idempotencyFields(options),
     });
   }
 
-  async releaseAll(ownerId: string, delWaitKey = false): Promise<void> {
-    await unary(this.client, 'releaseAll', { ownerId, delWaitKey });
+  async releaseAll(ownerId: string, delWaitKey?: boolean): Promise<void>;
+  async releaseAll(ownerId: string, options?: ReleaseOptions): Promise<void>;
+  async releaseAll(
+    ownerId: string,
+    optionsOrDelWaitKey: boolean | ReleaseOptions = false,
+  ): Promise<void> {
+    const options = normalizeReleaseOptions(optionsOrDelWaitKey);
+    await unary(this.client, 'releaseAll', {
+      ownerId,
+      delWaitKey: options.delWaitKey ?? false,
+      ...idempotencyFields(options),
+    });
   }
 
-  async renew(ownerId: string, ttlMs: number): Promise<RenewResult> {
+  async renew(ownerId: string, ttlMs: number, options: RenewOptions = {}): Promise<RenewResult> {
     const res = await unary(this.client, 'renew', {
       ownerId,
       ttlMs: toWirePositiveUint64(ttlMs, 'Renew.ttlMs'),
+      domains: options.domains ?? [],
+      ...idempotencyFields(options),
     });
     return {
       status: decodeWireEnum(RENEW_STATUS_FROM_WIRE, res.status, 'RenewResponse.status'),
@@ -206,8 +249,8 @@ export class PathlockdClient {
     };
   }
 
-  async forceRelease(victimId: string): Promise<void> {
-    await unary(this.client, 'forceRelease', { victimId });
+  async forceRelease(victimId: string, options?: IdempotentRequestOptions): Promise<void> {
+    await unary(this.client, 'forceRelease', { victimId, ...idempotencyFields(options) });
   }
 
   async assertFencing(ownerId: string, fencingToken: bigint, paths: string[]): Promise<AssertResult> {
@@ -239,8 +282,8 @@ export class PathlockdClient {
     return Boolean(res.blocking);
   }
 
-  async incrFencingToken(): Promise<bigint> {
-    const res = await unary(this.client, 'incrFencingToken', {});
+  async incrFencingToken(options?: IdempotentRequestOptions): Promise<bigint> {
+    const res = await unary(this.client, 'incrFencingToken', idempotencyFields(options));
     return wireInt64ToBigInt(res.token, 'IncrFencingTokenResponse.token');
   }
 
@@ -249,6 +292,7 @@ export class PathlockdClient {
     conflictOwner: string,
     ttlMs: number,
     metadata?: SetWaitEdgeMetadata,
+    options?: IdempotentRequestOptions,
   ): Promise<void> {
     if (metadata && (!metadata.conflictPath || !metadata.reason)) {
       throw new Error('SetWaitEdge metadata requires both conflictPath and reason');
@@ -259,11 +303,12 @@ export class PathlockdClient {
       ttlMs: toWirePositiveUint64(ttlMs, 'SetWaitEdge.ttlMs'),
       conflictPath: metadata?.conflictPath ?? '',
       reason: metadata?.reason ?? '',
+      ...idempotencyFields(options),
     });
   }
 
-  async clearWaitEdge(ownerId: string): Promise<void> {
-    await unary(this.client, 'clearWaitEdge', { ownerId });
+  async clearWaitEdge(ownerId: string, options?: IdempotentRequestOptions): Promise<void> {
+    await unary(this.client, 'clearWaitEdge', { ownerId, ...idempotencyFields(options) });
   }
 
   /**
@@ -275,11 +320,23 @@ export class PathlockdClient {
    * expires on its own. The claimant's own acquire consumes the claim
    * atomically on grant.
    */
-  async setClaim(path: string, claimantOwnerId: string, ttlMs = 0): Promise<SetClaimResult> {
+  async setClaim(path: string, claimantOwnerId: string, ttlMs?: number): Promise<SetClaimResult>;
+  async setClaim(
+    path: string,
+    claimantOwnerId: string,
+    options?: SetClaimOptions,
+  ): Promise<SetClaimResult>;
+  async setClaim(
+    path: string,
+    claimantOwnerId: string,
+    ttlMsOrOptions: number | SetClaimOptions = 0,
+  ): Promise<SetClaimResult> {
+    const options = normalizeSetClaimOptions(ttlMsOrOptions);
     const res = await unary(this.client, 'setClaim', {
       path,
       claimantOwnerId,
-      ttlMs: toWireUint64(ttlMs, 'SetClaim.ttlMs'),
+      ttlMs: toWireUint64(options.ttlMs ?? 0, 'SetClaim.ttlMs'),
+      ...idempotencyFields(options),
     });
     return {
       status: decodeWireEnum(SET_CLAIM_STATUS_FROM_WIRE, res.status, 'SetClaimResponse.status'),
@@ -288,8 +345,12 @@ export class PathlockdClient {
   }
 
   /** Clear `claimantOwnerId`'s own claim on `path`; a foreign claim is untouched. */
-  async clearClaim(path: string, claimantOwnerId: string): Promise<void> {
-    await unary(this.client, 'clearClaim', { path, claimantOwnerId });
+  async clearClaim(
+    path: string,
+    claimantOwnerId: string,
+    options?: IdempotentRequestOptions,
+  ): Promise<void> {
+    await unary(this.client, 'clearClaim', { path, claimantOwnerId, ...idempotencyFields(options) });
   }
 
   async isOwnerAlive(ownerId: string): Promise<boolean> {

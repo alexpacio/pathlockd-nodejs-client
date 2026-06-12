@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import * as grpc from '@grpc/grpc-js';
 import { WireEvent } from './proto';
-import { AcquireParams, AcquireResult, AssertResult, CycleResult, HealthResult, LockEntry, LockEvent, OwnerLocksResult, PathLockInfo, PathlockdClientOptions, PreemptionClaim, ReleaseRequest, RenewResult, SetClaimResult, SetWaitEdgeMetadata } from './types';
+import { AcquireParams, AcquireResult, AssertResult, CycleResult, HealthResult, IdempotentRequestOptions, LockEntry, LockEvent, OwnerLocksResult, PathLockInfo, PathlockdClientOptions, PreemptionClaim, ReleaseOptions, ReleaseRequest, RenewOptions, RenewResult, SetClaimOptions, SetClaimResult, SetWaitEdgeMetadata } from './types';
 /** Event name → listener signature for {@link PathlockdSubscription}. */
 interface SubscriptionEvents {
     event: (e: LockEvent) => void;
@@ -43,15 +43,17 @@ export declare class PathlockdClient {
     waitForReady(timeoutMs?: number): Promise<void>;
     acquire(params: AcquireParams): Promise<AcquireResult>;
     release(ownerId: string, requests: ReleaseRequest[], delWaitKey?: boolean): Promise<void>;
+    release(ownerId: string, requests: ReleaseRequest[], options?: ReleaseOptions): Promise<void>;
     releaseAll(ownerId: string, delWaitKey?: boolean): Promise<void>;
-    renew(ownerId: string, ttlMs: number): Promise<RenewResult>;
-    forceRelease(victimId: string): Promise<void>;
+    releaseAll(ownerId: string, options?: ReleaseOptions): Promise<void>;
+    renew(ownerId: string, ttlMs: number, options?: RenewOptions): Promise<RenewResult>;
+    forceRelease(victimId: string, options?: IdempotentRequestOptions): Promise<void>;
     assertFencing(ownerId: string, fencingToken: bigint, paths: string[]): Promise<AssertResult>;
     detectCycle(startOwnerId: string, maxDepth: number): Promise<CycleResult>;
     isBlocking(conflictPath: string, conflictOwner: string, reason: string): Promise<boolean>;
-    incrFencingToken(): Promise<bigint>;
-    setWaitEdge(ownerId: string, conflictOwner: string, ttlMs: number, metadata?: SetWaitEdgeMetadata): Promise<void>;
-    clearWaitEdge(ownerId: string): Promise<void>;
+    incrFencingToken(options?: IdempotentRequestOptions): Promise<bigint>;
+    setWaitEdge(ownerId: string, conflictOwner: string, ttlMs: number, metadata?: SetWaitEdgeMetadata, options?: IdempotentRequestOptions): Promise<void>;
+    clearWaitEdge(ownerId: string, options?: IdempotentRequestOptions): Promise<void>;
     /**
      * Plant an anti-starvation claim reserving `path` for `claimantOwnerId`.
      * Claim-if-absent: a live claim by another claimant is reported as `held`
@@ -62,8 +64,9 @@ export declare class PathlockdClient {
      * atomically on grant.
      */
     setClaim(path: string, claimantOwnerId: string, ttlMs?: number): Promise<SetClaimResult>;
+    setClaim(path: string, claimantOwnerId: string, options?: SetClaimOptions): Promise<SetClaimResult>;
     /** Clear `claimantOwnerId`'s own claim on `path`; a foreign claim is untouched. */
-    clearClaim(path: string, claimantOwnerId: string): Promise<void>;
+    clearClaim(path: string, claimantOwnerId: string, options?: IdempotentRequestOptions): Promise<void>;
     isOwnerAlive(ownerId: string): Promise<boolean>;
     /**
      * Read-only snapshot of the lock state at one exact path: live write owner,

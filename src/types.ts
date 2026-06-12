@@ -14,6 +14,30 @@ export type AssertStatus = 'ok' | 'fail';
 export type CycleKind = 'none' | 'cycle' | 'truncated';
 export type LockEventType = 'released' | 'killed' | 'revoke';
 export type SetClaimStatus = 'ok' | 'held';
+
+/** Options shared by mutating RPCs that support apply-once retry keys. */
+export interface IdempotentRequestOptions {
+  /** Optional apply-once key for safely retrying the same logical request. */
+  idempotencyKey?: string;
+}
+
+export interface ReleaseOptions extends IdempotentRequestOptions {
+  /** Fold the owner's wait-edge deletion into the same transaction. */
+  delWaitKey?: boolean;
+}
+
+export interface RenewOptions extends IdempotentRequestOptions {
+  /**
+   * Routing domains in which the owner holds locks. Supplying these lets the
+   * daemon target renew fan-out instead of probing every domain.
+   */
+  domains?: string[];
+}
+
+export interface SetClaimOptions extends IdempotentRequestOptions {
+  /** Reservation lifetime in ms; `0`/omitted lets the daemon pick a default. */
+  ttlMs?: number;
+}
 /**
  * A fencing token is the PD TSO version returned by {@link PathlockdClient.incrFencingToken}.
  * It is a packed i64 timestamp (`(physical_ms << 18) | logical`) that routinely exceeds
@@ -42,6 +66,8 @@ export interface AcquireParams {
   releaseRequests?: ReleaseRequest[];
   /** Publish a RELEASED event for ownerId if an inline release was applied. */
   emitRelease?: boolean;
+  /** Optional apply-once key for safely retrying the same logical request. */
+  idempotencyKey?: string;
 }
 
 export interface AcquireResult {

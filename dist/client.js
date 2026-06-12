@@ -29,6 +29,21 @@ function assertPositiveFencingToken(value, fieldName) {
         throw new Error(`${fieldName} must be a positive bigint`);
     }
 }
+function idempotencyFields(options) {
+    return options?.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {};
+}
+function normalizeReleaseOptions(optionsOrDelWaitKey) {
+    if (typeof optionsOrDelWaitKey === 'boolean') {
+        return { delWaitKey: optionsOrDelWaitKey };
+    }
+    return optionsOrDelWaitKey ?? {};
+}
+function normalizeSetClaimOptions(ttlMsOrOptions) {
+    if (typeof ttlMsOrOptions === 'number') {
+        return { ttlMs: ttlMsOrOptions };
+    }
+    return ttlMsOrOptions ?? {};
+}
 /**
  * A live, per-owner subscription to the pathlockd lifecycle event stream.
  *
@@ -105,6 +120,7 @@ class PathlockdClient {
             fencingToken: (0, proto_1.bigintToWireInt64)(params.fencingToken, 'Acquire.fencingToken'),
             releaseRequests: (params.releaseRequests ?? []).map(wireRelease),
             emitRelease: params.emitRelease ?? false,
+            ...idempotencyFields(params),
         });
         return {
             status: (0, proto_1.decodeWireEnum)(proto_1.ACQUIRE_STATUS_FROM_WIRE, res.status, 'AcquireResponse.status'),
@@ -113,20 +129,29 @@ class PathlockdClient {
             reason: res.reason ?? '',
         };
     }
-    async release(ownerId, requests, delWaitKey = false) {
+    async release(ownerId, requests, optionsOrDelWaitKey = false) {
+        const options = normalizeReleaseOptions(optionsOrDelWaitKey);
         await unary(this.client, 'release', {
             ownerId,
             requests: requests.map(wireRelease),
-            delWaitKey,
+            delWaitKey: options.delWaitKey ?? false,
+            ...idempotencyFields(options),
         });
     }
-    async releaseAll(ownerId, delWaitKey = false) {
-        await unary(this.client, 'releaseAll', { ownerId, delWaitKey });
+    async releaseAll(ownerId, optionsOrDelWaitKey = false) {
+        const options = normalizeReleaseOptions(optionsOrDelWaitKey);
+        await unary(this.client, 'releaseAll', {
+            ownerId,
+            delWaitKey: options.delWaitKey ?? false,
+            ...idempotencyFields(options),
+        });
     }
-    async renew(ownerId, ttlMs) {
+    async renew(ownerId, ttlMs, options = {}) {
         const res = await unary(this.client, 'renew', {
             ownerId,
             ttlMs: (0, proto_1.toWirePositiveUint64)(ttlMs, 'Renew.ttlMs'),
+            domains: options.domains ?? [],
+            ...idempotencyFields(options),
         });
         return {
             status: (0, proto_1.decodeWireEnum)(proto_1.RENEW_STATUS_FROM_WIRE, res.status, 'RenewResponse.status'),
@@ -134,8 +159,8 @@ class PathlockdClient {
             reason: res.reason ?? '',
         };
     }
-    async forceRelease(victimId) {
-        await unary(this.client, 'forceRelease', { victimId });
+    async forceRelease(victimId, options) {
+        await unary(this.client, 'forceRelease', { victimId, ...idempotencyFields(options) });
     }
     async assertFencing(ownerId, fencingToken, paths) {
         if (paths.length > 0) {
@@ -163,11 +188,11 @@ class PathlockdClient {
         const res = await unary(this.client, 'isBlocking', { conflictPath, conflictOwner, reason });
         return Boolean(res.blocking);
     }
-    async incrFencingToken() {
-        const res = await unary(this.client, 'incrFencingToken', {});
+    async incrFencingToken(options) {
+        const res = await unary(this.client, 'incrFencingToken', idempotencyFields(options));
         return (0, proto_1.wireInt64ToBigInt)(res.token, 'IncrFencingTokenResponse.token');
     }
-    async setWaitEdge(ownerId, conflictOwner, ttlMs, metadata) {
+    async setWaitEdge(ownerId, conflictOwner, ttlMs, metadata, options) {
         if (metadata && (!metadata.conflictPath || !metadata.reason)) {
             throw new Error('SetWaitEdge metadata requires both conflictPath and reason');
         }
@@ -177,25 +202,19 @@ class PathlockdClient {
             ttlMs: (0, proto_1.toWirePositiveUint64)(ttlMs, 'SetWaitEdge.ttlMs'),
             conflictPath: metadata?.conflictPath ?? '',
             reason: metadata?.reason ?? '',
+            ...idempotencyFields(options),
         });
     }
-    async clearWaitEdge(ownerId) {
-        await unary(this.client, 'clearWaitEdge', { ownerId });
+    async clearWaitEdge(ownerId, options) {
+        await unary(this.client, 'clearWaitEdge', { ownerId, ...idempotencyFields(options) });
     }
-    /**
-     * Plant an anti-starvation claim reserving `path` for `claimantOwnerId`.
-     * Claim-if-absent: a live claim by another claimant is reported as `held`
-     * (never overwritten); re-planting one's own claim re-arms its TTL. Claims
-     * are TTL-governed only — the claimant needs no lease, so a pure waiter can
-     * reserve the path it is queued for, and a crashed claimant's reservation
-     * expires on its own. The claimant's own acquire consumes the claim
-     * atomically on grant.
-     */
-    async setClaim(path, claimantOwnerId, ttlMs = 0) {
+    async setClaim(path, claimantOwnerId, ttlMsOrOptions = 0) {
+        const options = normalizeSetClaimOptions(ttlMsOrOptions);
         const res = await unary(this.client, 'setClaim', {
             path,
             claimantOwnerId,
-            ttlMs: (0, proto_1.toWireUint64)(ttlMs, 'SetClaim.ttlMs'),
+            ttlMs: (0, proto_1.toWireUint64)(options.ttlMs ?? 0, 'SetClaim.ttlMs'),
+            ...idempotencyFields(options),
         });
         return {
             status: (0, proto_1.decodeWireEnum)(proto_1.SET_CLAIM_STATUS_FROM_WIRE, res.status, 'SetClaimResponse.status'),
@@ -203,8 +222,8 @@ class PathlockdClient {
         };
     }
     /** Clear `claimantOwnerId`'s own claim on `path`; a foreign claim is untouched. */
-    async clearClaim(path, claimantOwnerId) {
-        await unary(this.client, 'clearClaim', { path, claimantOwnerId });
+    async clearClaim(path, claimantOwnerId, options) {
+        await unary(this.client, 'clearClaim', { path, claimantOwnerId, ...idempotencyFields(options) });
     }
     async isOwnerAlive(ownerId) {
         const res = await unary(this.client, 'isOwnerAlive', { ownerId });
