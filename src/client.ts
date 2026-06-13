@@ -1,10 +1,11 @@
-import { EventEmitter } from 'events';
+import { EventEmitter, once } from 'events';
 import * as grpc from '@grpc/grpc-js';
 
 import {
   ACQUIRE_STATUS_FROM_WIRE,
   ASSERT_STATUS_FROM_WIRE,
   buildCredentials,
+  ClientStreamingMethod,
   CYCLE_KIND_FROM_WIRE,
   decodeWireEnum,
   EVENT_TYPE_FROM_WIRE,
@@ -19,6 +20,8 @@ import {
   toWirePositiveUint64,
   toWireUint64,
   UnaryMethod,
+  WireAcquireRequest,
+  WireAcquireResponse,
   WireEvent,
   WireReleaseRequest,
   WireRequestRevokeRequest,
@@ -53,6 +56,8 @@ import {
  * throws past this many entries. Page manually with a higher cap if needed.
  */
 const DUMP_DEFAULT_MAX_ENTRIES = 100_000;
+const ACQUIRE_UNARY_MAX_PATHS = 1024;
+const ACQUIRE_STREAM_CHUNK_PATHS = 1024;
 
 /** The request type accepted by the unary method named `K` on client `C`. */
 type RequestOf<C, K extends keyof C> = C[K] extends UnaryMethod<infer Req, infer _Res> ? Req : never;
@@ -73,8 +78,101 @@ function unary<C, K extends keyof C>(
   });
 }
 
+function clientStreaming<Req, Res>(
+  client: PathLockServiceClient,
+  method: 'acquireStream',
+  requests: Iterable<Req>,
+): Promise<Res> {
+  return new Promise<Res>((resolve, reject) => {
+    let settled = false;
+    const settleResolve = (response: Res) => {
+      if (settled) return;
+      settled = true;
+      resolve(response);
+    };
+    const settleReject = (err: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+
+    const fn = client[method] as unknown as ClientStreamingMethod<Req, Res>;
+    const call = fn.call(client, (err, response) => (err ? settleReject(err) : settleResolve(response)));
+    call.on('error', settleReject);
+
+    void (async () => {
+      try {
+        for (const request of requests) {
+          if (!call.write(request)) {
+            await once(call, 'drain');
+          }
+        }
+        call.end();
+      } catch (err) {
+        call.destroy();
+        settleReject(err);
+      }
+    })();
+  });
+}
+
 function wireRelease(r: ReleaseRequest): WireReleaseRequest {
   return { path: r.path, mode: MODE_TO_WIRE[r.mode ?? 'write'] };
+}
+
+function wireAcquireRequest(params: AcquireParams): WireAcquireRequest {
+  return {
+    ownerId: params.ownerId,
+    ttlMs: toWirePositiveUint64(params.ttlMs, 'Acquire.ttlMs'),
+    requests: params.requests.map((r) => ({
+      path: r.path,
+      mode: MODE_TO_WIRE[r.mode ?? 'write'],
+      state: STATE_TO_WIRE[r.state ?? 'new'],
+    })),
+    fencingToken: bigintToWireInt64(params.fencingToken, 'Acquire.fencingToken'),
+    releaseRequests: (params.releaseRequests ?? []).map(wireRelease),
+    emitRelease: params.emitRelease ?? false,
+    ...idempotencyFields(params),
+  };
+}
+
+function decodeAcquireResponse(res: WireAcquireResponse): AcquireResult {
+  return {
+    status: decodeWireEnum(ACQUIRE_STATUS_FROM_WIRE, res.status, 'AcquireResponse.status'),
+    path: res.path ?? '',
+    owner: res.owner ?? '',
+    reason: res.reason ?? '',
+  };
+}
+
+function acquirePathCount(request: WireAcquireRequest): number {
+  return request.requests.length + request.releaseRequests.length;
+}
+
+function* chunkAcquireRequest(request: WireAcquireRequest): Iterable<WireAcquireRequest> {
+  let requestIndex = 0;
+  let releaseIndex = 0;
+  let first = true;
+
+  while (requestIndex < request.requests.length || releaseIndex < request.releaseRequests.length) {
+    const requests = request.requests.slice(requestIndex, requestIndex + ACQUIRE_STREAM_CHUNK_PATHS);
+    requestIndex += requests.length;
+
+    const remaining = ACQUIRE_STREAM_CHUNK_PATHS - requests.length;
+    const releaseRequests = request.releaseRequests.slice(releaseIndex, releaseIndex + remaining);
+    releaseIndex += releaseRequests.length;
+
+    yield {
+      ownerId: first ? request.ownerId : '',
+      ttlMs: first ? request.ttlMs : 0,
+      requests,
+      fencingToken: first ? request.fencingToken : 0,
+      releaseRequests,
+      emitRelease: first ? request.emitRelease : false,
+      ...(first && request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
+    };
+    first = false;
+  }
 }
 
 function hasWriteRequest(params: AcquireParams): boolean {
@@ -184,25 +282,16 @@ export class PathlockdClient {
     if (hasWriteRequest(params)) {
       assertPositiveFencingToken(params.fencingToken, 'Acquire.fencingToken');
     }
-    const res = await unary(this.client, 'acquire', {
-      ownerId: params.ownerId,
-      ttlMs: toWirePositiveUint64(params.ttlMs, 'Acquire.ttlMs'),
-      requests: params.requests.map((r) => ({
-        path: r.path,
-        mode: MODE_TO_WIRE[r.mode ?? 'write'],
-        state: STATE_TO_WIRE[r.state ?? 'new'],
-      })),
-      fencingToken: bigintToWireInt64(params.fencingToken, 'Acquire.fencingToken'),
-      releaseRequests: (params.releaseRequests ?? []).map(wireRelease),
-      emitRelease: params.emitRelease ?? false,
-      ...idempotencyFields(params),
-    });
-    return {
-      status: decodeWireEnum(ACQUIRE_STATUS_FROM_WIRE, res.status, 'AcquireResponse.status'),
-      path: res.path ?? '',
-      owner: res.owner ?? '',
-      reason: res.reason ?? '',
-    };
+    const req = wireAcquireRequest(params);
+    const res =
+      acquirePathCount(req) <= ACQUIRE_UNARY_MAX_PATHS
+        ? await unary(this.client, 'acquire', req)
+        : await clientStreaming<WireAcquireRequest, WireAcquireResponse>(
+            this.client,
+            'acquireStream',
+            chunkAcquireRequest(req),
+          );
+    return decodeAcquireResponse(res);
   }
 
   async release(ownerId: string, requests: ReleaseRequest[], delWaitKey?: boolean): Promise<void>;

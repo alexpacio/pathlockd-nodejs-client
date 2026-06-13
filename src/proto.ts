@@ -274,6 +274,11 @@ export type UnaryMethod<Req, Res> = (
   callback: (err: grpc.ServiceError | null, response: Res) => void,
 ) => grpc.ClientUnaryCall;
 
+/** A client-streaming RPC method: caller writes request chunks, callback receives one response. */
+export type ClientStreamingMethod<Req, Res> = (
+  callback: (err: grpc.ServiceError | null, response: Res) => void,
+) => grpc.ClientWritableStream<Req>;
+
 interface GrpcClientBase {
   waitForReady(deadline: grpc.Deadline, callback: (error?: Error) => void): void;
   close(): void;
@@ -281,6 +286,7 @@ interface GrpcClientBase {
 
 export interface PathLockServiceClient extends GrpcClientBase {
   acquire: UnaryMethod<WireAcquireRequest, WireAcquireResponse>;
+  acquireStream: ClientStreamingMethod<WireAcquireRequest, WireAcquireResponse>;
   release: UnaryMethod<WireReleaseLocksRequest, WireReleaseResponse>;
   releaseAll: UnaryMethod<WireReleaseAllRequest, WireReleaseResponse>;
   renew: UnaryMethod<WireRenewRequest, WireRenewResponse>;

@@ -9,6 +9,8 @@ const proto_1 = require("./proto");
  * throws past this many entries. Page manually with a higher cap if needed.
  */
 const DUMP_DEFAULT_MAX_ENTRIES = 100_000;
+const ACQUIRE_UNARY_MAX_PATHS = 1024;
+const ACQUIRE_STREAM_CHUNK_PATHS = 1024;
 /** Promisify a callback-style unary call, dispatched by method name on `client`. */
 function unary(client, method, request) {
     return new Promise((resolve, reject) => {
@@ -18,8 +20,90 @@ function unary(client, method, request) {
         fn.call(client, request, (err, response) => (err ? reject(err) : resolve(response)));
     });
 }
+function clientStreaming(client, method, requests) {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const settleResolve = (response) => {
+            if (settled)
+                return;
+            settled = true;
+            resolve(response);
+        };
+        const settleReject = (err) => {
+            if (settled)
+                return;
+            settled = true;
+            reject(err);
+        };
+        const fn = client[method];
+        const call = fn.call(client, (err, response) => (err ? settleReject(err) : settleResolve(response)));
+        call.on('error', settleReject);
+        void (async () => {
+            try {
+                for (const request of requests) {
+                    if (!call.write(request)) {
+                        await (0, events_1.once)(call, 'drain');
+                    }
+                }
+                call.end();
+            }
+            catch (err) {
+                call.destroy();
+                settleReject(err);
+            }
+        })();
+    });
+}
 function wireRelease(r) {
     return { path: r.path, mode: proto_1.MODE_TO_WIRE[r.mode ?? 'write'] };
+}
+function wireAcquireRequest(params) {
+    return {
+        ownerId: params.ownerId,
+        ttlMs: (0, proto_1.toWirePositiveUint64)(params.ttlMs, 'Acquire.ttlMs'),
+        requests: params.requests.map((r) => ({
+            path: r.path,
+            mode: proto_1.MODE_TO_WIRE[r.mode ?? 'write'],
+            state: proto_1.STATE_TO_WIRE[r.state ?? 'new'],
+        })),
+        fencingToken: (0, proto_1.bigintToWireInt64)(params.fencingToken, 'Acquire.fencingToken'),
+        releaseRequests: (params.releaseRequests ?? []).map(wireRelease),
+        emitRelease: params.emitRelease ?? false,
+        ...idempotencyFields(params),
+    };
+}
+function decodeAcquireResponse(res) {
+    return {
+        status: (0, proto_1.decodeWireEnum)(proto_1.ACQUIRE_STATUS_FROM_WIRE, res.status, 'AcquireResponse.status'),
+        path: res.path ?? '',
+        owner: res.owner ?? '',
+        reason: res.reason ?? '',
+    };
+}
+function acquirePathCount(request) {
+    return request.requests.length + request.releaseRequests.length;
+}
+function* chunkAcquireRequest(request) {
+    let requestIndex = 0;
+    let releaseIndex = 0;
+    let first = true;
+    while (requestIndex < request.requests.length || releaseIndex < request.releaseRequests.length) {
+        const requests = request.requests.slice(requestIndex, requestIndex + ACQUIRE_STREAM_CHUNK_PATHS);
+        requestIndex += requests.length;
+        const remaining = ACQUIRE_STREAM_CHUNK_PATHS - requests.length;
+        const releaseRequests = request.releaseRequests.slice(releaseIndex, releaseIndex + remaining);
+        releaseIndex += releaseRequests.length;
+        yield {
+            ownerId: first ? request.ownerId : '',
+            ttlMs: first ? request.ttlMs : 0,
+            requests,
+            fencingToken: first ? request.fencingToken : 0,
+            releaseRequests,
+            emitRelease: first ? request.emitRelease : false,
+            ...(first && request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
+        };
+        first = false;
+    }
 }
 function hasWriteRequest(params) {
     return params.requests.some((r) => (r.mode ?? 'write') === 'write');
@@ -109,25 +193,11 @@ class PathlockdClient {
         if (hasWriteRequest(params)) {
             assertPositiveFencingToken(params.fencingToken, 'Acquire.fencingToken');
         }
-        const res = await unary(this.client, 'acquire', {
-            ownerId: params.ownerId,
-            ttlMs: (0, proto_1.toWirePositiveUint64)(params.ttlMs, 'Acquire.ttlMs'),
-            requests: params.requests.map((r) => ({
-                path: r.path,
-                mode: proto_1.MODE_TO_WIRE[r.mode ?? 'write'],
-                state: proto_1.STATE_TO_WIRE[r.state ?? 'new'],
-            })),
-            fencingToken: (0, proto_1.bigintToWireInt64)(params.fencingToken, 'Acquire.fencingToken'),
-            releaseRequests: (params.releaseRequests ?? []).map(wireRelease),
-            emitRelease: params.emitRelease ?? false,
-            ...idempotencyFields(params),
-        });
-        return {
-            status: (0, proto_1.decodeWireEnum)(proto_1.ACQUIRE_STATUS_FROM_WIRE, res.status, 'AcquireResponse.status'),
-            path: res.path ?? '',
-            owner: res.owner ?? '',
-            reason: res.reason ?? '',
-        };
+        const req = wireAcquireRequest(params);
+        const res = acquirePathCount(req) <= ACQUIRE_UNARY_MAX_PATHS
+            ? await unary(this.client, 'acquire', req)
+            : await clientStreaming(this.client, 'acquireStream', chunkAcquireRequest(req));
+        return decodeAcquireResponse(res);
     }
     async release(ownerId, requests, optionsOrDelWaitKey = false) {
         const options = normalizeReleaseOptions(optionsOrDelWaitKey);
