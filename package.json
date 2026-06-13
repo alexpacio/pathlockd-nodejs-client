@@ -1,6 +1,6 @@
 {
   "name": "pathlockd-nodejs-client",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Typed Node.js/TypeScript gRPC client for pathlockd — fast, scalable, opinionated path-based distributed locking primitives over TiKV.",
   "license": "AGPL-3.0-or-later",
   "author": "alexpacio",
