@@ -14,7 +14,6 @@ import {
   MODE_TO_WIRE,
   PathLockServiceClient,
   RENEW_STATUS_FROM_WIRE,
-  SET_CLAIM_STATUS_FROM_WIRE,
   STATE_TO_WIRE,
   bigintToWireInt64,
   toWirePositiveUint64,
@@ -24,7 +23,6 @@ import {
   WireAcquireResponse,
   WireEvent,
   WireReleaseRequest,
-  WireRequestRevokeRequest,
   wireInt64ToBigInt,
 } from './proto';
 import {
@@ -40,13 +38,10 @@ import {
   OwnerLocksResult,
   PathLockInfo,
   PathlockdClientOptions,
-  PreemptionClaim,
   ReleaseOptions,
   ReleaseRequest,
   RenewOptions,
   RenewResult,
-  SetClaimOptions,
-  SetClaimResult,
   SetWaitEdgeMetadata,
 } from './types';
 
@@ -131,7 +126,7 @@ function wireAcquireRequest(params: AcquireParams): WireAcquireRequest {
     })),
     fencingToken: bigintToWireInt64(params.fencingToken, 'Acquire.fencingToken'),
     releaseRequests: (params.releaseRequests ?? []).map(wireRelease),
-    emitRelease: params.emitRelease ?? false,
+    queueTtlMs: toWireUint64(params.queueTtlMs ?? 0, 'Acquire.queueTtlMs'),
     ...idempotencyFields(params),
   };
 }
@@ -168,7 +163,7 @@ function* chunkAcquireRequest(request: WireAcquireRequest): Iterable<WireAcquire
       requests,
       fencingToken: first ? request.fencingToken : 0,
       releaseRequests,
-      emitRelease: first ? request.emitRelease : false,
+      queueTtlMs: first ? request.queueTtlMs : 0,
       ...(first && request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
     };
     first = false;
@@ -196,13 +191,6 @@ function normalizeReleaseOptions(optionsOrDelWaitKey?: boolean | ReleaseOptions)
   return optionsOrDelWaitKey ?? {};
 }
 
-function normalizeSetClaimOptions(ttlMsOrOptions?: number | SetClaimOptions): SetClaimOptions {
-  if (typeof ttlMsOrOptions === 'number') {
-    return { ttlMs: ttlMsOrOptions };
-  }
-  return ttlMsOrOptions ?? {};
-}
-
 /** Event name → listener signature for {@link PathlockdSubscription}. */
 interface SubscriptionEvents {
   event: (e: LockEvent) => void;
@@ -215,7 +203,7 @@ interface SubscriptionEvents {
  * A live, per-owner subscription to the pathlockd lifecycle event stream.
  *
  * It is bound to a single owner id and only ever surfaces events for that owner
- * (its cooperative `revoke`, a forced `kill`, or its own `released`).
+ * (its cooperative `revoke` or a forced `kill`).
  *
  * Emits:
  *  - `event`  → {@link LockEvent}
@@ -400,48 +388,6 @@ export class PathlockdClient {
     await unary(this.client, 'clearWaitEdge', { ownerId, ...idempotencyFields(options) });
   }
 
-  /**
-   * Plant an anti-starvation claim reserving `path` for `claimantOwnerId`.
-   * Claim-if-absent: a live claim by another claimant is reported as `held`
-   * (never overwritten); re-planting one's own claim re-arms its TTL. Claims
-   * are TTL-governed only — the claimant needs no lease, so a pure waiter can
-   * reserve the path it is queued for, and a crashed claimant's reservation
-   * expires on its own. The claimant's own acquire consumes the claim
-   * atomically on grant.
-   */
-  async setClaim(path: string, claimantOwnerId: string, ttlMs?: number): Promise<SetClaimResult>;
-  async setClaim(
-    path: string,
-    claimantOwnerId: string,
-    options?: SetClaimOptions,
-  ): Promise<SetClaimResult>;
-  async setClaim(
-    path: string,
-    claimantOwnerId: string,
-    ttlMsOrOptions: number | SetClaimOptions = 0,
-  ): Promise<SetClaimResult> {
-    const options = normalizeSetClaimOptions(ttlMsOrOptions);
-    const res = await unary(this.client, 'setClaim', {
-      path,
-      claimantOwnerId,
-      ttlMs: toWireUint64(options.ttlMs ?? 0, 'SetClaim.ttlMs'),
-      ...idempotencyFields(options),
-    });
-    return {
-      status: decodeWireEnum(SET_CLAIM_STATUS_FROM_WIRE, res.status, 'SetClaimResponse.status'),
-      claimOwner: res.claimOwner ? res.claimOwner : null,
-    };
-  }
-
-  /** Clear `claimantOwnerId`'s own claim on `path`; a foreign claim is untouched. */
-  async clearClaim(
-    path: string,
-    claimantOwnerId: string,
-    options?: IdempotentRequestOptions,
-  ): Promise<void> {
-    await unary(this.client, 'clearClaim', { path, claimantOwnerId, ...idempotencyFields(options) });
-  }
-
   async isOwnerAlive(ownerId: string): Promise<boolean> {
     const res = await unary(this.client, 'isOwnerAlive', { ownerId });
     return Boolean(res.alive);
@@ -525,26 +471,19 @@ export class PathlockdClient {
   }
 
   /**
-   * Publish a cooperative REVOKE for `ownerId`. When `claim` is supplied, the
-   * daemon also reserves `claim.path` for `claim.claimantOwnerId` (for
-   * `claim.ttlMs`, or a short default) before publishing, so the revoked victim
-   * cannot re-acquire the path before the claimant does. Omitting `claim`
-   * yields the legacy pure-notification behavior.
+   * Publish a cooperative REVOKE for `ownerId`: the daemon asks that owner to
+   * release its locks (to break a detected deadlock cycle). The wait queue's
+   * FIFO admission keeps the revoked victim queued behind the winner, so no
+   * preemption reservation is needed.
    */
-  async requestRevoke(ownerId: string, claim?: PreemptionClaim): Promise<void> {
-    const req: WireRequestRevokeRequest = { ownerId };
-    if (claim) {
-      req.claimPath = claim.path;
-      req.claimantOwnerId = claim.claimantOwnerId;
-      req.claimTtlMs = String(claim.ttlMs ?? 0);
-    }
-    await unary(this.client, 'requestRevoke', req);
+  async requestRevoke(ownerId: string): Promise<void> {
+    await unary(this.client, 'requestRevoke', { ownerId });
   }
 
   /**
    * Open the per-owner event stream for `ownerId`. The returned subscription
-   * only ever emits events for that owner (its `revoke`, `kill`, or own
-   * `released`). Returns immediately; events arrive via the emitter.
+   * only ever emits events for that owner (its `revoke` or `kill`). Returns
+   * immediately; events arrive via the emitter.
    */
   subscribe(ownerId: string): PathlockdSubscription {
     const stream = this.client.subscribe({ ownerId });

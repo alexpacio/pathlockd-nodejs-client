@@ -68,7 +68,7 @@ function wireAcquireRequest(params) {
         })),
         fencingToken: (0, proto_1.bigintToWireInt64)(params.fencingToken, 'Acquire.fencingToken'),
         releaseRequests: (params.releaseRequests ?? []).map(wireRelease),
-        emitRelease: params.emitRelease ?? false,
+        queueTtlMs: (0, proto_1.toWireUint64)(params.queueTtlMs ?? 0, 'Acquire.queueTtlMs'),
         ...idempotencyFields(params),
     };
 }
@@ -99,7 +99,7 @@ function* chunkAcquireRequest(request) {
             requests,
             fencingToken: first ? request.fencingToken : 0,
             releaseRequests,
-            emitRelease: first ? request.emitRelease : false,
+            queueTtlMs: first ? request.queueTtlMs : 0,
             ...(first && request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
         };
         first = false;
@@ -122,17 +122,11 @@ function normalizeReleaseOptions(optionsOrDelWaitKey) {
     }
     return optionsOrDelWaitKey ?? {};
 }
-function normalizeSetClaimOptions(ttlMsOrOptions) {
-    if (typeof ttlMsOrOptions === 'number') {
-        return { ttlMs: ttlMsOrOptions };
-    }
-    return ttlMsOrOptions ?? {};
-}
 /**
  * A live, per-owner subscription to the pathlockd lifecycle event stream.
  *
  * It is bound to a single owner id and only ever surfaces events for that owner
- * (its cooperative `revoke`, a forced `kill`, or its own `released`).
+ * (its cooperative `revoke` or a forced `kill`).
  *
  * Emits:
  *  - `event`  → {@link LockEvent}
@@ -278,23 +272,6 @@ class PathlockdClient {
     async clearWaitEdge(ownerId, options) {
         await unary(this.client, 'clearWaitEdge', { ownerId, ...idempotencyFields(options) });
     }
-    async setClaim(path, claimantOwnerId, ttlMsOrOptions = 0) {
-        const options = normalizeSetClaimOptions(ttlMsOrOptions);
-        const res = await unary(this.client, 'setClaim', {
-            path,
-            claimantOwnerId,
-            ttlMs: (0, proto_1.toWireUint64)(options.ttlMs ?? 0, 'SetClaim.ttlMs'),
-            ...idempotencyFields(options),
-        });
-        return {
-            status: (0, proto_1.decodeWireEnum)(proto_1.SET_CLAIM_STATUS_FROM_WIRE, res.status, 'SetClaimResponse.status'),
-            claimOwner: res.claimOwner ? res.claimOwner : null,
-        };
-    }
-    /** Clear `claimantOwnerId`'s own claim on `path`; a foreign claim is untouched. */
-    async clearClaim(path, claimantOwnerId, options) {
-        await unary(this.client, 'clearClaim', { path, claimantOwnerId, ...idempotencyFields(options) });
-    }
     async isOwnerAlive(ownerId) {
         const res = await unary(this.client, 'isOwnerAlive', { ownerId });
         return Boolean(res.alive);
@@ -373,25 +350,18 @@ class PathlockdClient {
         }
     }
     /**
-     * Publish a cooperative REVOKE for `ownerId`. When `claim` is supplied, the
-     * daemon also reserves `claim.path` for `claim.claimantOwnerId` (for
-     * `claim.ttlMs`, or a short default) before publishing, so the revoked victim
-     * cannot re-acquire the path before the claimant does. Omitting `claim`
-     * yields the legacy pure-notification behavior.
+     * Publish a cooperative REVOKE for `ownerId`: the daemon asks that owner to
+     * release its locks (to break a detected deadlock cycle). The wait queue's
+     * FIFO admission keeps the revoked victim queued behind the winner, so no
+     * preemption reservation is needed.
      */
-    async requestRevoke(ownerId, claim) {
-        const req = { ownerId };
-        if (claim) {
-            req.claimPath = claim.path;
-            req.claimantOwnerId = claim.claimantOwnerId;
-            req.claimTtlMs = String(claim.ttlMs ?? 0);
-        }
-        await unary(this.client, 'requestRevoke', req);
+    async requestRevoke(ownerId) {
+        await unary(this.client, 'requestRevoke', { ownerId });
     }
     /**
      * Open the per-owner event stream for `ownerId`. The returned subscription
-     * only ever emits events for that owner (its `revoke`, `kill`, or own
-     * `released`). Returns immediately; events arrive via the emitter.
+     * only ever emits events for that owner (its `revoke` or `kill`). Returns
+     * immediately; events arrive via the emitter.
      */
     subscribe(ownerId) {
         const stream = this.client.subscribe({ ownerId });

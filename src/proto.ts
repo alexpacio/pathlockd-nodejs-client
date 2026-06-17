@@ -10,7 +10,6 @@ import {
   LockMode,
   LockState,
   RenewStatus,
-  SetClaimStatus,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -48,7 +47,7 @@ export interface WireAcquireRequest {
   requests: WireLockRequest[];
   fencingToken: number | string;
   releaseRequests: WireReleaseRequest[];
-  emitRelease: boolean;
+  queueTtlMs: number | string;
   idempotencyKey?: string;
 }
 
@@ -160,35 +159,8 @@ export interface WireIsOwnerAliveResponse {
   alive: boolean;
 }
 
-export interface WireSetClaimRequest {
-  path: string;
-  claimantOwnerId: string;
-  // uint64 encoded as string (longs:String); "0" selects the daemon default.
-  ttlMs: string;
-  idempotencyKey?: string;
-}
-
-export interface WireSetClaimResponse {
-  status: string;
-  claimOwner: string;
-}
-
-export interface WireClearClaimRequest {
-  path: string;
-  claimantOwnerId: string;
-  idempotencyKey?: string;
-}
-
-export type WireClearClaimResponse = Record<string, never>;
-
 export interface WireRequestRevokeRequest {
   ownerId: string;
-  // Optional preemption claim: reserve claimPath for claimantOwnerId until the
-  // winner acquires it, so the revoked victim can't re-grab it first. uint64 is
-  // decoded/encoded as string by proto-loader (longs:String).
-  claimPath?: string;
-  claimantOwnerId?: string;
-  claimTtlMs?: string;
 }
 
 export type WireRequestRevokeResponse = Record<string, never>;
@@ -297,8 +269,6 @@ export interface PathLockServiceClient extends GrpcClientBase {
   incrFencingToken: UnaryMethod<WireIncrFencingTokenRequest, WireIncrFencingTokenResponse>;
   setWaitEdge: UnaryMethod<WireSetWaitEdgeRequest, WireSetWaitEdgeResponse>;
   clearWaitEdge: UnaryMethod<WireClearWaitEdgeRequest, WireClearWaitEdgeResponse>;
-  setClaim: UnaryMethod<WireSetClaimRequest, WireSetClaimResponse>;
-  clearClaim: UnaryMethod<WireClearClaimRequest, WireClearClaimResponse>;
   isOwnerAlive: UnaryMethod<WireIsOwnerAliveRequest, WireIsOwnerAliveResponse>;
   requestRevoke: UnaryMethod<WireRequestRevokeRequest, WireRequestRevokeResponse>;
   inspectPath: UnaryMethod<WireInspectPathRequest, WireInspectPathResponse>;
@@ -366,6 +336,7 @@ export const ACQUIRE_STATUS_FROM_WIRE: Record<string, AcquireStatus> = {
   ACQUIRE_STATUS_OK: 'ok',
   ACQUIRE_STATUS_CONFLICT: 'conflict',
   ACQUIRE_STATUS_LOST: 'lost',
+  ACQUIRE_STATUS_QUEUED: 'queued',
 };
 
 export const RENEW_STATUS_FROM_WIRE: Record<string, RenewStatus> = {
@@ -385,14 +356,9 @@ export const CYCLE_KIND_FROM_WIRE: Record<string, CycleKind> = {
 };
 
 export const EVENT_TYPE_FROM_WIRE: Record<string, LockEventType> = {
-  EVENT_TYPE_RELEASED: 'released',
   EVENT_TYPE_KILLED: 'killed',
   EVENT_TYPE_REVOKE: 'revoke',
-};
-
-export const SET_CLAIM_STATUS_FROM_WIRE: Record<string, SetClaimStatus> = {
-  SET_CLAIM_STATUS_OK: 'ok',
-  SET_CLAIM_STATUS_HELD: 'held',
+  EVENT_TYPE_GRANT: 'grant',
 };
 
 export function decodeWireEnum<T extends string>(

@@ -8,12 +8,11 @@ export type LockMode = 'write' | 'read';
 /** Whether a request is a new acquisition or a re-validation of a held path. */
 export type LockState = 'new' | 'held';
 
-export type AcquireStatus = 'ok' | 'conflict' | 'lost';
+export type AcquireStatus = 'ok' | 'conflict' | 'lost' | 'queued';
 export type RenewStatus = 'ok' | 'lost';
 export type AssertStatus = 'ok' | 'fail';
 export type CycleKind = 'none' | 'cycle' | 'truncated';
-export type LockEventType = 'released' | 'killed' | 'revoke';
-export type SetClaimStatus = 'ok' | 'held';
+export type LockEventType = 'killed' | 'revoke' | 'grant';
 
 /** Options shared by mutating RPCs that support apply-once retry keys. */
 export interface IdempotentRequestOptions {
@@ -34,10 +33,6 @@ export interface RenewOptions extends IdempotentRequestOptions {
   domains?: string[];
 }
 
-export interface SetClaimOptions extends IdempotentRequestOptions {
-  /** Reservation lifetime in ms; `0`/omitted lets the daemon pick a default. */
-  ttlMs?: number;
-}
 /**
  * A fencing token is the PD TSO version returned by {@link PathlockdClient.incrFencingToken}.
  * It is a packed i64 timestamp (`(physical_ms << 18) | logical`) that routinely exceeds
@@ -64,8 +59,13 @@ export interface AcquireParams {
   fencingToken: FencingToken;
   /** Releases folded into the same atomic transaction (shadowing transitions). */
   releaseRequests?: ReleaseRequest[];
-  /** Publish a RELEASED event for ownerId if an inline release was applied. */
-  emitRelease?: boolean;
+  /**
+   * If this acquire is queued (contended), how long its wait-queue entry lives
+   * without being granted — the caller's own acquire deadline. `0`/omitted
+   * selects a server default. Lets an abandoned waiter self-evict at the
+   * caller's threshold instead of a fixed server TTL.
+   */
+  queueTtlMs?: number;
   /** Optional apply-once key for safely retrying the same logical request. */
   idempotencyKey?: string;
 }
@@ -158,31 +158,6 @@ export interface LockEntry {
   mode: LockMode;
   /** Fencing token for write locks; `null` for reads. */
   fence: FencingToken | null;
-}
-
-/**
- * Result of {@link PathlockdClient.setClaim}. Claims are claim-if-absent: a
- * live claim by another claimant is reported (`held`), never overwritten;
- * re-planting one's own claim re-arms its TTL and reports `ok`.
- */
-export interface SetClaimResult {
-  status: SetClaimStatus;
-  /** The current claimant when status is `held`; `null` on `ok`. */
-  claimOwner: string | null;
-}
-
-/**
- * An optional preemption claim passed to {@link PathlockdClient.requestRevoke}.
- * The daemon reserves `path` for `claimantOwnerId` until that owner acquires
- * it, so the revoked victim cannot re-grab the path first.
- */
-export interface PreemptionClaim {
-  /** The contended path to reserve (daemon `handler:path` form). */
-  path: string;
-  /** The owner the path is reserved for — typically the revoker itself. */
-  claimantOwnerId: string;
-  /** Reservation lifetime in ms; `0`/omitted lets the daemon pick a default. */
-  ttlMs?: number;
 }
 
 export interface PathlockdClientOptions {
