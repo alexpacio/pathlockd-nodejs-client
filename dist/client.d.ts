@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import * as grpc from '@grpc/grpc-js';
 import { WireEvent } from './proto';
-import { AcquireParams, AcquireResult, AssertResult, CycleResult, HealthResult, IdempotentRequestOptions, LockEntry, LockEvent, OwnerLocksResult, PathLockInfo, PathlockdClientOptions, ReleaseOptions, ReleaseRequest, RenewOptions, RenewResult, SetWaitEdgeMetadata } from './types';
+import { AcquireParams, AcquireResult, AssertResult, CycleResult, HealthResult, IdempotentRequestOptions, LockAlgorithm, LockEntry, LockEvent, NamespacePolicyResult, OwnerLocksResult, OwnerReadOptions, PathLockInfo, PathlockdClientOptions, ReasonCode, ReleaseAllOptions, ReleaseOptions, ReleaseRequest, RenewOptions, RenewResult, SetWaitEdgeMetadata } from './types';
 /** Event name → listener signature for {@link PathlockdSubscription}. */
 interface SubscriptionEvents {
     event: (e: LockEvent) => void;
@@ -13,7 +13,7 @@ interface SubscriptionEvents {
  * A live, per-owner subscription to the pathlockd lifecycle event stream.
  *
  * It is bound to a single owner id and only ever surfaces events for that owner
- * (its cooperative `revoke` or a forced `kill`).
+ * (its cooperative `revoke`, a forced `kill`, or a queued acquire `grant`).
  *
  * Emits:
  *  - `event`  → {@link LockEvent}
@@ -38,26 +38,37 @@ export declare class PathlockdSubscription extends EventEmitter {
  */
 export declare class PathlockdClient {
     private readonly client;
+    private readonly defaultCallTimeoutMs?;
     constructor(opts: PathlockdClientOptions);
+    /**
+     * Build grpc call options for one RPC: a deadline (per-call `deadlineMs`,
+     * else the client default). The deadline spans any automatic transport
+     * retries. Abort-signal cancellation is wired separately (grpc-js exposes it
+     * through the call handle, not these options) — see {@link unary}.
+     */
+    private callOptions;
     /** Wait until the channel is ready (or reject after `timeoutMs`). */
     waitForReady(timeoutMs?: number): Promise<void>;
     acquire(params: AcquireParams): Promise<AcquireResult>;
+    setNamespacePolicy(namespace: string, algorithm: LockAlgorithm, options?: IdempotentRequestOptions): Promise<void>;
+    getNamespacePolicy(namespace: string): Promise<NamespacePolicyResult>;
+    deleteNamespacePolicy(namespace: string, options?: IdempotentRequestOptions): Promise<void>;
     release(ownerId: string, requests: ReleaseRequest[], delWaitKey?: boolean): Promise<void>;
     release(ownerId: string, requests: ReleaseRequest[], options?: ReleaseOptions): Promise<void>;
     releaseAll(ownerId: string, delWaitKey?: boolean): Promise<void>;
-    releaseAll(ownerId: string, options?: ReleaseOptions): Promise<void>;
+    releaseAll(ownerId: string, options?: ReleaseAllOptions): Promise<void>;
     renew(ownerId: string, ttlMs: number, options?: RenewOptions): Promise<RenewResult>;
     forceRelease(victimId: string, options?: IdempotentRequestOptions): Promise<void>;
     assertFencing(ownerId: string, fencingToken: bigint, paths: string[]): Promise<AssertResult>;
     detectCycle(startOwnerId: string, maxDepth: number): Promise<CycleResult>;
-    isBlocking(conflictPath: string, conflictOwner: string, reason: string): Promise<boolean>;
+    isBlocking(conflictPath: string, conflictOwner: string, reason: ReasonCode): Promise<boolean>;
     incrFencingToken(options?: IdempotentRequestOptions): Promise<bigint>;
     setWaitEdge(ownerId: string, conflictOwner: string, ttlMs: number, metadata?: SetWaitEdgeMetadata, options?: IdempotentRequestOptions): Promise<void>;
     clearWaitEdge(ownerId: string, options?: IdempotentRequestOptions): Promise<void>;
-    isOwnerAlive(ownerId: string): Promise<boolean>;
+    isOwnerAlive(ownerId: string, options?: OwnerReadOptions): Promise<boolean>;
     /**
      * Read-only snapshot of the lock state at one exact path: live write owner,
-     * live read owners, fence value and any preemption claim. Filtered by owner
+     * live read owners, semaphore owners, and fence value. Filtered by owner
      * liveness; never mutates daemon state.
      */
     inspectPath(path: string): Promise<PathLockInfo>;
@@ -66,7 +77,7 @@ export declare class PathlockdClient {
      * liveness lease is still present. The owner-centric companion to
      * {@link inspectPath}.
      */
-    listOwnerLocks(ownerId: string): Promise<OwnerLocksResult>;
+    listOwnerLocks(ownerId: string, options?: OwnerReadOptions): Promise<OwnerLocksResult>;
     /**
      * Dump every live lock across the cluster, auto-paginating internally. Each
      * entry is one (owner, mode, path) holding with the fence for write locks.
@@ -97,7 +108,7 @@ export declare class PathlockdClient {
     requestRevoke(ownerId: string): Promise<void>;
     /**
      * Open the per-owner event stream for `ownerId`. The returned subscription
-     * only ever emits events for that owner (its `revoke` or `kill`). Returns
+     * only ever emits events for that owner (its `revoke`, `kill`, or `grant`). Returns
      * immediately; events arrive via the emitter.
      */
     subscribe(ownerId: string): PathlockdSubscription;
