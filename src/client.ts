@@ -4,49 +4,56 @@ import * as grpc from '@grpc/grpc-js';
 import {
   ACQUIRE_STATUS_FROM_WIRE,
   ASSERT_STATUS_FROM_WIRE,
+  buildChannelOptions,
   buildCredentials,
   ClientStreamingMethod,
   CYCLE_KIND_FROM_WIRE,
   decodeWireEnum,
   EVENT_TYPE_FROM_WIRE,
+  LOCK_ALGORITHM_FROM_WIRE,
+  LOCK_ALGORITHM_TO_WIRE,
   loadPathlockdProto,
   MODE_FROM_WIRE,
   MODE_TO_WIRE,
   PathLockServiceClient,
+  REASON_FROM_WIRE,
+  REASON_TO_WIRE,
   RENEW_STATUS_FROM_WIRE,
-  SET_CLAIM_STATUS_FROM_WIRE,
   STATE_TO_WIRE,
   bigintToWireInt64,
   toWirePositiveUint64,
+  toWireUint32,
   toWireUint64,
   UnaryMethod,
   WireAcquireRequest,
   WireAcquireResponse,
   WireEvent,
   WireReleaseRequest,
-  WireRequestRevokeRequest,
   wireInt64ToBigInt,
 } from './proto';
 import {
   AcquireParams,
   AcquireResult,
   AssertResult,
+  CallOptions,
   CycleResult,
   HealthResult,
   IdempotentRequestOptions,
+  LockAlgorithm,
   LockEntry,
   LockEvent,
+  NamespacePolicyResult,
   OwnedLockInfo,
   OwnerLocksResult,
+  OwnerReadOptions,
   PathLockInfo,
   PathlockdClientOptions,
-  PreemptionClaim,
+  ReasonCode,
+  ReleaseAllOptions,
   ReleaseOptions,
   ReleaseRequest,
   RenewOptions,
   RenewResult,
-  SetClaimOptions,
-  SetClaimResult,
   SetWaitEdgeMetadata,
 } from './types';
 
@@ -69,12 +76,24 @@ function unary<C, K extends keyof C>(
   client: C,
   method: K,
   request: RequestOf<C, K>,
+  options: grpc.CallOptions = {},
+  signal?: AbortSignal,
 ): Promise<ResponseOf<C, K>> {
   return new Promise<ResponseOf<C, K>>((resolve, reject) => {
     const fn = client[method] as unknown as UnaryMethod<RequestOf<C, K>, ResponseOf<C, K>>;
     // Member dispatch is lost when the method is held in a local, so re-bind
     // `this` to the client (grpc-js client methods rely on it).
-    fn.call(client, request, (err, response) => (err ? reject(err) : resolve(response)));
+    const call = fn.call(client, request, options, (err, response) => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      return err ? reject(err) : resolve(response);
+    });
+    // grpc-js has no AbortSignal in CallOptions; cancel through the call handle.
+    // A cancelled call surfaces as a CANCELLED gRPC error to the callback above.
+    const onAbort = () => call.cancel();
+    if (signal) {
+      if (signal.aborted) call.cancel();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
   });
 }
 
@@ -82,22 +101,32 @@ function clientStreaming<Req, Res>(
   client: PathLockServiceClient,
   method: 'acquireStream',
   requests: Iterable<Req>,
+  options: grpc.CallOptions = {},
+  signal?: AbortSignal,
 ): Promise<Res> {
   return new Promise<Res>((resolve, reject) => {
     let settled = false;
     const settleResolve = (response: Res) => {
       if (settled) return;
       settled = true;
+      if (signal) signal.removeEventListener('abort', onAbort);
       resolve(response);
     };
     const settleReject = (err: unknown) => {
       if (settled) return;
       settled = true;
+      if (signal) signal.removeEventListener('abort', onAbort);
       reject(err);
     };
 
     const fn = client[method] as unknown as ClientStreamingMethod<Req, Res>;
-    const call = fn.call(client, (err, response) => (err ? settleReject(err) : settleResolve(response)));
+    const call = fn.call(client, options, (err, response) => (err ? settleReject(err) : settleResolve(response)));
+    // grpc-js has no AbortSignal in CallOptions; cancel through the call handle.
+    const onAbort = () => call.cancel();
+    if (signal) {
+      if (signal.aborted) call.cancel();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
     call.on('error', settleReject);
 
     void (async () => {
@@ -128,10 +157,11 @@ function wireAcquireRequest(params: AcquireParams): WireAcquireRequest {
       path: r.path,
       mode: MODE_TO_WIRE[r.mode ?? 'write'],
       state: STATE_TO_WIRE[r.state ?? 'new'],
+      permits: toWireUint32(r.permits ?? 0, `Acquire.requests[${r.path}].permits`),
     })),
-    fencingToken: bigintToWireInt64(params.fencingToken, 'Acquire.fencingToken'),
+    fencingToken: bigintToWireInt64(params.fencingToken ?? 0n, 'Acquire.fencingToken'),
     releaseRequests: (params.releaseRequests ?? []).map(wireRelease),
-    emitRelease: params.emitRelease ?? false,
+    queueTtlMs: toWireUint64(params.queueTtlMs ?? 0, 'Acquire.queueTtlMs'),
     ...idempotencyFields(params),
   };
 }
@@ -141,8 +171,22 @@ function decodeAcquireResponse(res: WireAcquireResponse): AcquireResult {
     status: decodeWireEnum(ACQUIRE_STATUS_FROM_WIRE, res.status, 'AcquireResponse.status'),
     path: res.path ?? '',
     owner: res.owner ?? '',
-    reason: res.reason ?? '',
+    reason: decodeWireEnum(REASON_FROM_WIRE, res.reason, 'AcquireResponse.reason'),
+    fencingToken: decodeOptionalFencingToken(
+      res.fencingToken,
+      'AcquireResponse.fencingToken',
+    ),
+    currentFencingToken: decodeOptionalFencingToken(
+      res.currentFencingToken,
+      'AcquireResponse.currentFencingToken',
+    ),
+    namespace: res.namespace ?? '',
   };
+}
+
+function decodeOptionalFencingToken(value: unknown, fieldName: string): bigint | null {
+  const token = wireInt64ToBigInt(value, fieldName);
+  return token === 0n ? null : token;
 }
 
 function acquirePathCount(request: WireAcquireRequest): number {
@@ -168,20 +212,22 @@ function* chunkAcquireRequest(request: WireAcquireRequest): Iterable<WireAcquire
       requests,
       fencingToken: first ? request.fencingToken : 0,
       releaseRequests,
-      emitRelease: first ? request.emitRelease : false,
+      queueTtlMs: first ? request.queueTtlMs : 0,
       ...(first && request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
     };
     first = false;
   }
 }
 
-function hasWriteRequest(params: AcquireParams): boolean {
-  return params.requests.some((r) => (r.mode ?? 'write') === 'write');
-}
-
 function assertPositiveFencingToken(value: bigint, fieldName: string): void {
   if (typeof value !== 'bigint' || value <= 0n) {
     throw new Error(`${fieldName} must be a positive bigint`);
+  }
+}
+
+function assertNonNegativeFencingToken(value: bigint, fieldName: string): void {
+  if (typeof value !== 'bigint' || value < 0n) {
+    throw new Error(`${fieldName} must be a non-negative bigint`);
   }
 }
 
@@ -196,13 +242,6 @@ function normalizeReleaseOptions(optionsOrDelWaitKey?: boolean | ReleaseOptions)
   return optionsOrDelWaitKey ?? {};
 }
 
-function normalizeSetClaimOptions(ttlMsOrOptions?: number | SetClaimOptions): SetClaimOptions {
-  if (typeof ttlMsOrOptions === 'number') {
-    return { ttlMs: ttlMsOrOptions };
-  }
-  return ttlMsOrOptions ?? {};
-}
-
 /** Event name → listener signature for {@link PathlockdSubscription}. */
 interface SubscriptionEvents {
   event: (e: LockEvent) => void;
@@ -215,7 +254,7 @@ interface SubscriptionEvents {
  * A live, per-owner subscription to the pathlockd lifecycle event stream.
  *
  * It is bound to a single owner id and only ever surfaces events for that owner
- * (its cooperative `revoke`, a forced `kill`, or its own `released`).
+ * (its cooperative `revoke`, a forced `kill`, or a queued acquire `grant`).
  *
  * Emits:
  *  - `event`  → {@link LockEvent}
@@ -260,14 +299,29 @@ export class PathlockdSubscription extends EventEmitter {
  */
 export class PathlockdClient {
   private readonly client: PathLockServiceClient;
+  private readonly defaultCallTimeoutMs?: number;
 
   constructor(opts: PathlockdClientOptions) {
     const ns = loadPathlockdProto();
+    this.defaultCallTimeoutMs = opts.defaultCallTimeoutMs;
     this.client = new ns.PathLock(
       opts.endpoint,
       buildCredentials(opts.tls ?? false),
-      opts.channelOptions ?? {},
+      buildChannelOptions(opts.channelOptions),
     );
+  }
+
+  /**
+   * Build grpc call options for one RPC: a deadline (per-call `deadlineMs`,
+   * else the client default). The deadline spans any automatic transport
+   * retries. Abort-signal cancellation is wired separately (grpc-js exposes it
+   * through the call handle, not these options) — see {@link unary}.
+   */
+  private callOptions(opts?: CallOptions): grpc.CallOptions {
+    const timeoutMs = opts?.deadlineMs ?? this.defaultCallTimeoutMs;
+    const callOpts: grpc.CallOptions = {};
+    if (timeoutMs != null) callOpts.deadline = Date.now() + timeoutMs;
+    return callOpts;
   }
 
   /** Wait until the channel is ready (or reject after `timeoutMs`). */
@@ -279,19 +333,68 @@ export class PathlockdClient {
   }
 
   async acquire(params: AcquireParams): Promise<AcquireResult> {
-    if (hasWriteRequest(params)) {
-      assertPositiveFencingToken(params.fencingToken, 'Acquire.fencingToken');
+    if (params.fencingToken !== undefined) {
+      assertNonNegativeFencingToken(params.fencingToken, 'Acquire.fencingToken');
     }
     const req = wireAcquireRequest(params);
+    const callOpts = this.callOptions(params);
     const res =
       acquirePathCount(req) <= ACQUIRE_UNARY_MAX_PATHS
-        ? await unary(this.client, 'acquire', req)
+        ? await unary(this.client, 'acquire', req, callOpts, params.signal)
         : await clientStreaming<WireAcquireRequest, WireAcquireResponse>(
             this.client,
             'acquireStream',
             chunkAcquireRequest(req),
+            callOpts,
+            params.signal,
           );
     return decodeAcquireResponse(res);
+  }
+
+  async setNamespacePolicy(
+    namespace: string,
+    algorithm: LockAlgorithm,
+    options?: IdempotentRequestOptions,
+  ): Promise<void> {
+    await unary(
+      this.client,
+      'setNamespacePolicy',
+      {
+        namespace,
+        algorithm: LOCK_ALGORITHM_TO_WIRE[algorithm],
+        ...idempotencyFields(options),
+      },
+      this.callOptions(options),
+      options?.signal,
+    );
+  }
+
+  async getNamespacePolicy(namespace: string): Promise<NamespacePolicyResult> {
+    const res = await unary(this.client, 'getNamespacePolicy', { namespace }, this.callOptions());
+    return {
+      algorithm: decodeWireEnum(
+        LOCK_ALGORITHM_FROM_WIRE,
+        res.algorithm,
+        'GetNamespacePolicyResponse.algorithm',
+      ),
+      explicit: Boolean(res.explicit),
+    };
+  }
+
+  async deleteNamespacePolicy(
+    namespace: string,
+    options?: IdempotentRequestOptions,
+  ): Promise<void> {
+    await unary(
+      this.client,
+      'deleteNamespacePolicy',
+      {
+        namespace,
+        ...idempotencyFields(options),
+      },
+      this.callOptions(options),
+      options?.signal,
+    );
   }
 
   async release(ownerId: string, requests: ReleaseRequest[], delWaitKey?: boolean): Promise<void>;
@@ -302,77 +405,135 @@ export class PathlockdClient {
     optionsOrDelWaitKey: boolean | ReleaseOptions = false,
   ): Promise<void> {
     const options = normalizeReleaseOptions(optionsOrDelWaitKey);
-    await unary(this.client, 'release', {
-      ownerId,
-      requests: requests.map(wireRelease),
-      delWaitKey: options.delWaitKey ?? false,
-      ...idempotencyFields(options),
-    });
+    await unary(
+      this.client,
+      'release',
+      {
+        ownerId,
+        requests: requests.map(wireRelease),
+        delWaitKey: options.delWaitKey ?? false,
+        ...idempotencyFields(options),
+      },
+      this.callOptions(options),
+      options?.signal,
+    );
   }
 
   async releaseAll(ownerId: string, delWaitKey?: boolean): Promise<void>;
-  async releaseAll(ownerId: string, options?: ReleaseOptions): Promise<void>;
+  async releaseAll(ownerId: string, options?: ReleaseAllOptions): Promise<void>;
   async releaseAll(
     ownerId: string,
-    optionsOrDelWaitKey: boolean | ReleaseOptions = false,
+    optionsOrDelWaitKey: boolean | ReleaseAllOptions = false,
   ): Promise<void> {
-    const options = normalizeReleaseOptions(optionsOrDelWaitKey);
-    await unary(this.client, 'releaseAll', {
-      ownerId,
-      delWaitKey: options.delWaitKey ?? false,
-      ...idempotencyFields(options),
-    });
+    const options: ReleaseAllOptions =
+      typeof optionsOrDelWaitKey === 'boolean'
+        ? { delWaitKey: optionsOrDelWaitKey }
+        : (optionsOrDelWaitKey ?? {});
+    await unary(
+      this.client,
+      'releaseAll',
+      {
+        ownerId,
+        delWaitKey: options.delWaitKey ?? false,
+        domains: options.domains ?? [],
+        ...idempotencyFields(options),
+      },
+      this.callOptions(options),
+      options?.signal,
+    );
   }
 
   async renew(ownerId: string, ttlMs: number, options: RenewOptions = {}): Promise<RenewResult> {
-    const res = await unary(this.client, 'renew', {
-      ownerId,
-      ttlMs: toWirePositiveUint64(ttlMs, 'Renew.ttlMs'),
-      domains: options.domains ?? [],
-      ...idempotencyFields(options),
-    });
+    const res = await unary(
+      this.client,
+      'renew',
+      {
+        ownerId,
+        ttlMs: toWirePositiveUint64(ttlMs, 'Renew.ttlMs'),
+        domains: options.domains ?? [],
+        ...idempotencyFields(options),
+      },
+      this.callOptions(options),
+      options?.signal,
+    );
     return {
       status: decodeWireEnum(RENEW_STATUS_FROM_WIRE, res.status, 'RenewResponse.status'),
       path: res.path ?? '',
-      reason: res.reason ?? '',
+      reason: decodeWireEnum(REASON_FROM_WIRE, res.reason, 'RenewResponse.reason'),
+      revokeRequested: Boolean(res.revokeRequested),
     };
   }
 
   async forceRelease(victimId: string, options?: IdempotentRequestOptions): Promise<void> {
-    await unary(this.client, 'forceRelease', { victimId, ...idempotencyFields(options) });
+    await unary(
+      this.client,
+      'forceRelease',
+      { victimId, ...idempotencyFields(options) },
+      this.callOptions(options),
+      options?.signal,
+    );
   }
 
   async assertFencing(ownerId: string, fencingToken: bigint, paths: string[]): Promise<AssertResult> {
     if (paths.length > 0) {
       assertPositiveFencingToken(fencingToken, 'AssertFencing.fencingToken');
     }
-    const res = await unary(this.client, 'assertFencing', {
-      ownerId,
-      fencingToken: bigintToWireInt64(fencingToken, 'AssertFencing.fencingToken'),
-      paths,
-    });
+    const res = await unary(
+      this.client,
+      'assertFencing',
+      {
+        ownerId,
+        fencingToken: bigintToWireInt64(fencingToken, 'AssertFencing.fencingToken'),
+        paths,
+      },
+      this.callOptions(),
+    );
     return {
       status: decodeWireEnum(ASSERT_STATUS_FROM_WIRE, res.status, 'AssertFencingResponse.status'),
       path: res.path ?? '',
-      reason: res.reason ?? '',
+      reason: decodeWireEnum(REASON_FROM_WIRE, res.reason, 'AssertFencingResponse.reason'),
     };
   }
 
   async detectCycle(startOwnerId: string, maxDepth: number): Promise<CycleResult> {
-    const res = await unary(this.client, 'detectCycle', { startOwnerId, maxDepth });
+    const res = await unary(
+      this.client,
+      'detectCycle',
+      { startOwnerId, maxDepth },
+      this.callOptions(),
+    );
     return {
       kind: decodeWireEnum(CYCLE_KIND_FROM_WIRE, res.kind, 'DetectCycleResponse.kind'),
       chain: res.chain ?? [],
     };
   }
 
-  async isBlocking(conflictPath: string, conflictOwner: string, reason: string): Promise<boolean> {
-    const res = await unary(this.client, 'isBlocking', { conflictPath, conflictOwner, reason });
+  async isBlocking(
+    conflictPath: string,
+    conflictOwner: string,
+    reason: ReasonCode,
+  ): Promise<boolean> {
+    const res = await unary(
+      this.client,
+      'isBlocking',
+      {
+        conflictPath,
+        conflictOwner,
+        reason: REASON_TO_WIRE[reason],
+      },
+      this.callOptions(),
+    );
     return Boolean(res.blocking);
   }
 
   async incrFencingToken(options?: IdempotentRequestOptions): Promise<bigint> {
-    const res = await unary(this.client, 'incrFencingToken', idempotencyFields(options));
+    const res = await unary(
+      this.client,
+      'incrFencingToken',
+      idempotencyFields(options),
+      this.callOptions(options),
+      options?.signal,
+    );
     return wireInt64ToBigInt(res.token, 'IncrFencingTokenResponse.token');
   }
 
@@ -386,79 +547,55 @@ export class PathlockdClient {
     if (metadata && (!metadata.conflictPath || !metadata.reason)) {
       throw new Error('SetWaitEdge metadata requires both conflictPath and reason');
     }
-    await unary(this.client, 'setWaitEdge', {
-      ownerId,
-      conflictOwner,
-      ttlMs: toWirePositiveUint64(ttlMs, 'SetWaitEdge.ttlMs'),
-      conflictPath: metadata?.conflictPath ?? '',
-      reason: metadata?.reason ?? '',
-      ...idempotencyFields(options),
-    });
+    await unary(
+      this.client,
+      'setWaitEdge',
+      {
+        ownerId,
+        conflictOwner,
+        ttlMs: toWirePositiveUint64(ttlMs, 'SetWaitEdge.ttlMs'),
+        conflictPath: metadata?.conflictPath ?? '',
+        reason: REASON_TO_WIRE[metadata?.reason ?? 'unspecified'],
+        ...idempotencyFields(options),
+      },
+      this.callOptions(options),
+      options?.signal,
+    );
   }
 
   async clearWaitEdge(ownerId: string, options?: IdempotentRequestOptions): Promise<void> {
-    await unary(this.client, 'clearWaitEdge', { ownerId, ...idempotencyFields(options) });
+    await unary(
+      this.client,
+      'clearWaitEdge',
+      { ownerId, ...idempotencyFields(options) },
+      this.callOptions(options),
+      options?.signal,
+    );
   }
 
-  /**
-   * Plant an anti-starvation claim reserving `path` for `claimantOwnerId`.
-   * Claim-if-absent: a live claim by another claimant is reported as `held`
-   * (never overwritten); re-planting one's own claim re-arms its TTL. Claims
-   * are TTL-governed only — the claimant needs no lease, so a pure waiter can
-   * reserve the path it is queued for, and a crashed claimant's reservation
-   * expires on its own. The claimant's own acquire consumes the claim
-   * atomically on grant.
-   */
-  async setClaim(path: string, claimantOwnerId: string, ttlMs?: number): Promise<SetClaimResult>;
-  async setClaim(
-    path: string,
-    claimantOwnerId: string,
-    options?: SetClaimOptions,
-  ): Promise<SetClaimResult>;
-  async setClaim(
-    path: string,
-    claimantOwnerId: string,
-    ttlMsOrOptions: number | SetClaimOptions = 0,
-  ): Promise<SetClaimResult> {
-    const options = normalizeSetClaimOptions(ttlMsOrOptions);
-    const res = await unary(this.client, 'setClaim', {
-      path,
-      claimantOwnerId,
-      ttlMs: toWireUint64(options.ttlMs ?? 0, 'SetClaim.ttlMs'),
-      ...idempotencyFields(options),
-    });
-    return {
-      status: decodeWireEnum(SET_CLAIM_STATUS_FROM_WIRE, res.status, 'SetClaimResponse.status'),
-      claimOwner: res.claimOwner ? res.claimOwner : null,
-    };
-  }
-
-  /** Clear `claimantOwnerId`'s own claim on `path`; a foreign claim is untouched. */
-  async clearClaim(
-    path: string,
-    claimantOwnerId: string,
-    options?: IdempotentRequestOptions,
-  ): Promise<void> {
-    await unary(this.client, 'clearClaim', { path, claimantOwnerId, ...idempotencyFields(options) });
-  }
-
-  async isOwnerAlive(ownerId: string): Promise<boolean> {
-    const res = await unary(this.client, 'isOwnerAlive', { ownerId });
+  async isOwnerAlive(ownerId: string, options?: OwnerReadOptions): Promise<boolean> {
+    const res = await unary(
+      this.client,
+      'isOwnerAlive',
+      { ownerId, domains: options?.domains ?? [] },
+      this.callOptions(options),
+      options?.signal,
+    );
     return Boolean(res.alive);
   }
 
   /**
    * Read-only snapshot of the lock state at one exact path: live write owner,
-   * live read owners, fence value and any preemption claim. Filtered by owner
+   * live read owners, semaphore owners, and fence value. Filtered by owner
    * liveness; never mutates daemon state.
    */
   async inspectPath(path: string): Promise<PathLockInfo> {
-    const res = await unary(this.client, 'inspectPath', { path });
+    const res = await unary(this.client, 'inspectPath', { path }, this.callOptions());
     return {
       writeOwner: res.writeOwner ? res.writeOwner : null,
       readOwners: res.readOwners ?? [],
       fence: res.hasFence ? wireInt64ToBigInt(res.fence, 'InspectPathResponse.fence') : null,
-      claimOwner: res.claimOwner ? res.claimOwner : null,
+      semaphoreOwners: res.semaphoreOwners ?? [],
     };
   }
 
@@ -467,8 +604,14 @@ export class PathlockdClient {
    * liveness lease is still present. The owner-centric companion to
    * {@link inspectPath}.
    */
-  async listOwnerLocks(ownerId: string): Promise<OwnerLocksResult> {
-    const res = await unary(this.client, 'listOwnerLocks', { ownerId });
+  async listOwnerLocks(ownerId: string, options?: OwnerReadOptions): Promise<OwnerLocksResult> {
+    const res = await unary(
+      this.client,
+      'listOwnerLocks',
+      { ownerId, domains: options?.domains ?? [] },
+      this.callOptions(options),
+      options?.signal,
+    );
     const locks: OwnedLockInfo[] = (res.locks ?? []).map((l) => ({
       path: l.path,
       mode: decodeWireEnum(MODE_FROM_WIRE, l.mode, 'OwnedLock.mode'),
@@ -511,7 +654,12 @@ export class PathlockdClient {
   async *dumpLocksPages(ownerPage = 0): AsyncGenerator<LockEntry[]> {
     let cursor: Buffer | Uint8Array = Buffer.alloc(0);
     for (;;) {
-      const res = await unary(this.client, 'dumpLocks', { cursor, ownerPage });
+      const res = await unary(
+        this.client,
+        'dumpLocks',
+        { cursor, ownerPage },
+        this.callOptions(),
+      );
       const page: LockEntry[] = (res.entries ?? []).map((e) => ({
         owner: e.owner,
         path: e.path,
@@ -525,26 +673,19 @@ export class PathlockdClient {
   }
 
   /**
-   * Publish a cooperative REVOKE for `ownerId`. When `claim` is supplied, the
-   * daemon also reserves `claim.path` for `claim.claimantOwnerId` (for
-   * `claim.ttlMs`, or a short default) before publishing, so the revoked victim
-   * cannot re-acquire the path before the claimant does. Omitting `claim`
-   * yields the legacy pure-notification behavior.
+   * Publish a cooperative REVOKE for `ownerId`: the daemon asks that owner to
+   * release its locks (to break a detected deadlock cycle). The wait queue's
+   * FIFO admission keeps the revoked victim queued behind the winner, so no
+   * preemption reservation is needed.
    */
-  async requestRevoke(ownerId: string, claim?: PreemptionClaim): Promise<void> {
-    const req: WireRequestRevokeRequest = { ownerId };
-    if (claim) {
-      req.claimPath = claim.path;
-      req.claimantOwnerId = claim.claimantOwnerId;
-      req.claimTtlMs = String(claim.ttlMs ?? 0);
-    }
-    await unary(this.client, 'requestRevoke', req);
+  async requestRevoke(ownerId: string): Promise<void> {
+    await unary(this.client, 'requestRevoke', { ownerId }, this.callOptions());
   }
 
   /**
    * Open the per-owner event stream for `ownerId`. The returned subscription
-   * only ever emits events for that owner (its `revoke`, `kill`, or own
-   * `released`). Returns immediately; events arrive via the emitter.
+   * only ever emits events for that owner (its `revoke`, `kill`, or `grant`). Returns
+   * immediately; events arrive via the emitter.
    */
   subscribe(ownerId: string): PathlockdSubscription {
     const stream = this.client.subscribe({ ownerId });
@@ -552,7 +693,7 @@ export class PathlockdClient {
   }
 
   async health(): Promise<HealthResult> {
-    const res = await unary(this.client, 'health', {});
+    const res = await unary(this.client, 'health', {}, this.callOptions());
     return { ok: Boolean(res.ok), detail: res.detail ?? '' };
   }
 
